@@ -21,6 +21,7 @@ def nextpow2(x):
 
 def wss(clean_speech, processed_speech, sr):
   assert len(clean_speech) == len(processed_speech)
+
   winlength = round(30 * sr / 1000)
   skiprate = math.floor(winlength / 4)
   max_freq = sr / 2
@@ -48,83 +49,120 @@ def wss(clean_speech, processed_speech, sr):
 
   distortion = np.zeros(num_frames)
   for frame_count in range(num_frames):
+
+    def wss_frame(frame, window, crit_filter):
+      frame = frame * window
+    
+      # compute power spectrum of clean/processed
+      if USE_FFT_SPECTRUM:
+        spec = np.abs(np.fft.fft(frame, n_fft))**2
+      else:
+        a_vec = np.zeros(n_fft)
+        a_vec[:11] = lpc(frame, 10)
+        spec = 1.0 / (np.abs(np.fft.fft(a_vec, n_fft))**2)
+    
+      # compute filterbank output energy (db)
+      energy = np.zeros(num_crit)
+      for i in range(num_crit):
+        energy[i] = np.sum(spec[:n_fftby2] * crit_filter[i,:])
+
+      energy = 10 * np.log10(np.maximum(energy, 1e-10))
+    
+      # compute spectral slope
+      slope = energy[1:] - energy[:-1]
+
+      # nearest peak location in the spectra to each critical band
+      loc_peak = np.zeros(num_crit-1)
+      for i in range(num_crit-1):
+        if slope[i] > 0:
+          n = i
+          while (n < (num_crit-1)) and (slope[n] > 0):
+            n += 1
+          loc_peak[i] = energy[n-1]
+
+        else:
+          n = i
+          while (n>=0) and (slope[n] <= 0):
+            n -= 1
+          loc_peak[i] = energy[n+1]
+    
+      # compute wss measure for this frame
+      dBMax = np.max(energy)
+      Wmax = Kmax / (Kmax + dBMax - energy[:num_crit-1])
+      Wlocmax = Klocmax / (Klocmax + loc_peak - energy[:num_crit-1])
+      W = Wmax * Wlocmax
+
+      return W, slope
+
     clean_frame = clean_speech[start:start+winlength]
     processed_frame = processed_speech[start:start+winlength]
-    clean_frame = clean_frame * window
-    processed_frame = processed_frame * window
 
-    # compute power spectrum of clean/processed
-    if USE_FFT_SPECTRUM:
-      clean_spec = np.abs(np.fft.fft(clean_frame, n_fft))**2
-      processed_spec = np.abs(np.fft.fft(processed_frame, n_fft))**2
-
-    else:
-      a_vec = np.zeros(n_fft)
-      a_vec[:11] = lpc(clean_frame, 10)
-      clean_spec = 1.0 / (np.abs(np.fft.fft(a_vec, n_fft))**2)
-      
-      a_vec = np.zeros(n_fft)
-      a_vec[:11] = lpc(processed_frame, 10)
-      processed_spec = 1.0 / (np.abs(np.fft.fft(a_vec, n_fft))**2)
-
-    # compute filterbank output energy (db)
-    clean_energy = np.zeros(num_crit)
-    processed_energy = np.zeros(num_crit)
-    for i in range(num_crit):
-      clean_energy[i] = np.sum(clean_spec[:n_fftby2] * crit_filter[i,:])
-      processed_energy[i] = np.sum(processed_spec[:n_fftby2] * crit_filter[i,:])
-
-    clean_energy = 10 * np.log10(np.maximum(clean_energy, 1e-10))
-    processed_energy = 10 * np.log10(np.maximum(processed_energy, 1e-10))
-
-    # compute spectral slope
-    clean_slope = clean_energy[1:] - clean_energy[:-1]
-    processed_slope = processed_energy[1:] - processed_energy[:-1]
-
-    # nearest peak location in the spectra to each critical band
-    clean_loc_peak = np.zeros(num_crit-1)
-    processed_loc_peak = np.zeros(num_crit-1)
-    for i in range(num_crit-1):
-      if clean_slope[i] > 0:
-        n = i
-        while (n < (num_crit-1)) and (clean_slope[n] > 0):
-          n += 1
-        clean_loc_peak[i] = clean_energy[n-1]
-
-      else:
-        n = i
-        while (n>=0) and (clean_slope[n] <= 0):
-          n -= 1
-        clean_loc_peak[i] = clean_energy[n+1]
-
-      if processed_slope[i] > 0:
-        n = i
-        while (n < (num_crit-1)) and (processed_slope[n] > 0):
-          n += 1
-        processed_loc_peak[i] = processed_energy[n-1]
-
-      else:
-        n = i
-        while (n>=0) and (processed_slope[n] <= 0):
-          n -= 1
-        processed_loc_peak[i] = processed_energy[n+1]
-
-    # compute wss measure for this frame
-    dBMax_clean = np.max(clean_energy)
-    dBMax_processed = np.max(processed_energy)
-
-    Wmax_clean = Kmax / (Kmax + dBMax_clean - clean_energy[:num_crit-1])
-    Wlocmax_clean = Klocmax / (Klocmax + clean_loc_peak - clean_energy[:num_crit-1])
-    W_clean = Wmax_clean * Wlocmax_clean
-
-    Wmax_processed = Kmax / (Kmax + dBMax_processed - processed_energy[:num_crit-1])
-    Wlocmax_processed = Klocmax / (Klocmax + processed_loc_peak - processed_energy[:num_crit-1])
-    W_processed = Wmax_processed * Wlocmax_processed
+    W_clean, clean_slope = wss_frame(clean_frame, window, crit_filter)
+    W_processed, processed_slope = wss_frame(processed_frame, window, crit_filter)
 
     W = (W_clean + W_processed) / 2.
     distortion[frame_count] = np.sum(W * (clean_slope[:num_crit-1] - processed_slope[:num_crit-1])**2)
     distortion[frame_count] /= np.sum(W)
 
+    start += skiprate
+
+  return distortion
+
+def lpcoeff(speech_frame, order):
+  winlength = speech_frame.shape[0]
+
+  R = np.zeros(order+1)
+  for k in range(order+1):
+    R[k] = np.sum(speech_frame[:winlength-k] * speech_frame[k:winlength])
+
+  a = np.ones(order)
+  E = R[0]
+  rcoeff = np.zeros(order)
+
+  for i in range(order):
+    a_past = a[:i]
+    sum_term = np.sum(a_past * R[1:i+1][::-1])
+    rcoeff[i] = (R[i+1] - sum_term) / E
+    a[i] = rcoeff[i]
+    a[:i] = a_past - rcoeff[i] * a_past[::-1];
+    E = (1-rcoeff[i]*rcoeff[i]) * E;
+
+  return R, rcoeff, np.concatenate([[1], -a])
+
+from scipy.linalg import toeplitz
+
+def llr(clean_speech, processed_speech, sr):
+  assert len(clean_speech) == len(processed_speech)
+  
+  winlength = round(30 * sr / 1000)
+  skiprate = math.floor(winlength / 4)
+  if sr < 10000: P = 10
+  else: P = 16
+  
+  num_frames = int(len(clean_speech) / skiprate - (winlength / skiprate))
+  start = 0
+  window = 0.5 * (1 - np.cos(2 * np.pi * np.arange(1,winlength+1)/(winlength+1)))
+  
+  distortion = np.zeros(num_frames)
+  for frame_count in range(num_frames):
+    
+    clean_frame = clean_speech[start:start+winlength]
+    processed_frame = processed_speech[start:start+winlength]
+
+    clean_frame = clean_frame * window
+    processed_frame = processed_frame * window
+
+    R_clean, Ref_clean, A_clean = lpcoeff(clean_frame, P)
+    R_processed, Ref_processed, A_processed = lpcoeff(processed_frame, P)
+
+    numerator = np.matmul(np.matmul(A_processed, 
+      toeplitz(R_clean)), 
+      np.transpose(A_processed))
+    denominator = np.matmul(np.matmul(A_clean, 
+      toeplitz(R_clean)), 
+      np.transpose(A_clean))
+
+    distortion[frame_count] = np.log(numerator / denominator)
     start += skiprate
 
   return distortion
@@ -142,3 +180,11 @@ def composite(cleanFile, enhancedFile):
   data2 = data2[:_len] + eps
 
   wss_dist_vec = wss(data1, data2, Srate1)
+  wss_dist_vec = sorted(wss_dist_vec)
+  wss_dist = np.mean(wss_dist_vec[:round(len(wss_dist_vec)*alpha)])
+
+  LLR_dist = llr(data1, data2, Srate1)
+  LLRs = sorted(LLR_dist)
+  llr_mean = np.mean(LLRs[:round(len(LLR_dist) * alpha)])
+
+  print(LLR_dist)
