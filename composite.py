@@ -172,9 +172,6 @@ def llr(clean_speech, processed_speech, sr):
 def snr(clean_speech, processed_speech, sr):
   assert len(clean_speech) == len(processed_speech)
 
-  overall_snr = 10 * np.log10(np.sum(clean_speech**2) / 
-    np.sum((clean_speech - processed_speech)**2))
-  
   winlength = round(30 * sr / 1000)
   skiprate = math.floor(winlength / 4)
   MIN_SNR = -10
@@ -202,29 +199,22 @@ def snr(clean_speech, processed_speech, sr):
 
     start += skiprate
 
-  return overall_snr, segmental_snr 
+  return segmental_snr 
 
-def composite(cleanFile, enhancedFile):
-  alpha = 0.95
-
-  data1, Srate1 = soundfile.read(cleanFile)
-  data2, Srate2 = soundfile.read(enhancedFile)
-  assert Srate1 == Srate2
-
+def composite(data1, data2, sr, alpha=0.95):
   _len = min(data1.shape[0], data2.shape[0])
   data1 = data1[:_len] + eps
   data2 = data2[:_len] + eps
 
-  wss_dist_vec = wss(data1, data2, Srate1)
+  wss_dist_vec = wss(data1, data2, sr)
   wss_dist_vec = sorted(wss_dist_vec)
   wss_dist = np.mean(wss_dist_vec[:round(len(wss_dist_vec)*alpha)])
 
-  LLR_dist = llr(data1, data2, Srate1)
+  LLR_dist = llr(data1, data2, sr)
   LLRs = sorted(LLR_dist)
   llr_mean = np.mean(LLRs[:round(len(LLR_dist) * alpha)])
 
-  snr_dist, segsnr_dist = snr(data1, data2, Srate1)
-  snr_mean = snr_dist
+  segsnr_dist = snr(data1, data2, sr)
   segSNR = np.mean(segsnr_dist)
 
   pesq_mos = 0
