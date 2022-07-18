@@ -2,6 +2,8 @@ import soundfile
 import numpy as np
 import math
 
+eps = 2.2204e-16
+
 cent_freq = [
   50.0000, 120.000, 190.000, 260.000, 330.000, 
   400.000, 470.000, 540.000, 617.372, 703.378, 
@@ -167,9 +169,43 @@ def llr(clean_speech, processed_speech, sr):
 
   return distortion
 
+def snr(clean_speech, processed_speech, sr):
+  assert len(clean_speech) == len(processed_speech)
+
+  overall_snr = 10 * np.log10(np.sum(clean_speech**2) / 
+    np.sum((clean_speech - processed_speech)**2))
+  
+  winlength = round(30 * sr / 1000)
+  skiprate = math.floor(winlength / 4)
+  MIN_SNR = -10
+  MAX_SNR = 35
+  
+  num_frames = int(len(clean_speech) / skiprate - (winlength / skiprate))
+  start = 0
+  window = 0.5 * (1 - np.cos(2 * np.pi * np.arange(1,winlength+1)/(winlength+1)))
+
+  segmental_snr = np.zeros(num_frames)
+  for frame_count in range(num_frames):
+
+    clean_frame = clean_speech[start:start+winlength]
+    processed_frame = processed_speech[start:start+winlength]
+    
+    clean_frame = clean_frame * window
+    processed_frame = processed_frame * window
+
+    signal_energy = np.sum(clean_frame**2)
+    noisy_energy = np.sum((clean_frame - processed_frame)**2)
+
+    segmental_snr[frame_count] = 10 * np.log10(signal_energy / (noisy_energy + eps) + eps)
+    segmental_snr[frame_count] = np.maximum(segmental_snr[frame_count], MIN_SNR)
+    segmental_snr[frame_count] = np.minimum(segmental_snr[frame_count], MAX_SNR)
+
+    start += skiprate
+
+  return overall_snr, segmental_snr 
+
 def composite(cleanFile, enhancedFile):
   alpha = 0.95
-  eps = 2.2204e-16
 
   data1, Srate1 = soundfile.read(cleanFile)
   data2, Srate2 = soundfile.read(enhancedFile)
@@ -187,4 +223,14 @@ def composite(cleanFile, enhancedFile):
   LLRs = sorted(LLR_dist)
   llr_mean = np.mean(LLRs[:round(len(LLR_dist) * alpha)])
 
-  print(LLR_dist)
+  snr_dist, segsnr_dist = snr(data1, data2, Srate1)
+  snr_mean = snr_dist
+  segSNR = np.mean(segsnr_dist)
+
+  pesq_mos = 0
+
+  Csig = 3.093 - 1.029*llr_mean + 0.603*pesq_mos-0.009*wss_dist
+  Cbak = 1.634 + 0.478 *pesq_mos - 0.007*wss_dist + 0.063*segSNR
+  Covl = 1.594 + 0.805*pesq_mos - 0.512*llr_mean - 0.007*wss_dist
+
+  return Csig, Cbak, Covl, segSNR
