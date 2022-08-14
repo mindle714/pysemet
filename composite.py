@@ -201,6 +201,8 @@ def snr(clean_speech, processed_speech, sr):
 
   return segmental_snr 
 
+import pesq
+
 def composite(data1, data2, sr, alpha=0.95):
   _len = min(data1.shape[0], data2.shape[0])
   data1 = data1[:_len] + eps
@@ -217,7 +219,12 @@ def composite(data1, data2, sr, alpha=0.95):
   segsnr_dist = snr(data1, data2, sr)
   segSNR = np.mean(segsnr_dist)
 
-  pesq_mos = 0
+  sr_mod = 'wb' if sr == 16000 else 'nb'
+  # TODO pesq value slightly differ from MATLAB version; need to check
+  pesq_mos = pesq.pesq(sr, data1, data2, mode=sr_mod)
+  # convert to raw pesq on narrow-band case
+  if sr_mod == 'nb':
+    pesq_mos = (math.log((4./(pesq_mos - 0.999))-1.)-4.6607) / -1.4945
 
   Csig = 3.093 - 1.029*llr_mean + 0.603*pesq_mos-0.009*wss_dist
   Cbak = 1.634 + 0.478 *pesq_mos - 0.007*wss_dist + 0.063*segSNR
