@@ -2,6 +2,7 @@ import math
 import numpy as np
 np.set_printoptions(suppress=True)
 from scipy import signal
+import align
 
 searchbuffer = 75
 datapadding = 320
@@ -307,110 +308,6 @@ def intensity_warping_of(frame, pitch_pow_dens, sr):
 
   return loudness_dens
 
-def fftnxcorr(ref_vad, startr, nr, deg_vad, startd, nd):
-  nx = 2 ** (math.ceil(math.log2(max(nr, nd))))
-  x1 = np.zeros(2 * nx)
-  x2 = np.zeros(2 * nx)
-  startd = max(0, startd)
-  startr = max(0, startr)
-
-  x1[:nr] = ref_vad[startr : startr+nr][::-1]
-  x2[:nd] = deg_vad[startd : startd+nd]
-
-  x1_fft = np.fft.fft(x1, 2*nx)
-  x2_fft = np.fft.fft(x2, 2*nx)
-  tmp = np.fft.ifft(x1_fft * x2_fft, 2*nx)
-  
-  return tmp[:nr+nd-1]
-
-def crude_align_whole(ref_logvad, deg_logvad, sr):
-  sr_mod = 'wb' if sr == 16000 else 'nb'
-  downsample = 32 if sr_mod == 'nb' else 64 
-
-  nr = math.floor(ref_logvad.shape[0] / downsample)
-  nd = math.floor(deg_logvad.shape[0] / downsample)
-  startr = 0; startd = 0
-
-  startr = max(0, startr)
-  startd = max(0, startd)
-
-  max_y = 0.
-  i_max_y = nr
-  if nr > 1 and nd > 1:
-    y = fftnxcorr(ref_logvad, startr, nr, deg_logvad, startd, nd)
-    i_max_y = np.argmax(y)
-    max_y = y[i_max_y]
-    if max_y <= 0:
-      max_y = 0
-      i_max_y = nr
-
-  crude_delayest = (i_max_y - nr) * downsample
-  return crude_delayest
-
-def crude_align_utt(ref_logvad, deg_logvad, 
-                    uttsearch_start, uttsearch_end, 
-                    utt_id, crude_delayest, sr):
-  sr_mod = 'wb' if sr == 16000 else 'nb'
-  downsample = 32 if sr_mod == 'nb' else 64 
-
-  startr = uttsearch_start[utt_id]
-  startd = startr + crude_delayest / downsample
-  if startd < 0:
-    startr = -crude_delayest / downsample
-    startd = 0
-
-  nr = uttsearch_end[utt_id] - startr
-  nd = nr
-  if (startd + nd) > math.floor(deglen / downsample):
-    nd = math.floor(deglen / downsample) - startd
-
-  startr = max(0, startr)
-  startd = max(0, startd)
-
-  max_y = 0.
-  i_max_y = nr
-  if nr > 1 and nd > 1:
-    y = fftnxcorr(ref_logvad, startr, nr, deg_logvad, startd, nd)
-    i_max_y = np.argmax(y)
-    max_y = y[i_max_y]
-    if max_y <= 0:
-      max_y = 0
-      i_max_y = nr
-
-  return (i_max_y - nr) * downsample + crude_delayest
-
-def crude_align_test(ref_logvad, deg_logvad, 
-                    uttsearch_start, uttsearch_end, 
-                    utt_id, crude_delayest, sr):
-  sr_mod = 'wb' if sr == 16000 else 'nb'
-  downsample = 32 if sr_mod == 'nb' else 64 
-
-  startr = uttsearch_start[utt_id]
-  startd = startr + crude_delayest / downsample
-  if startd < 0:
-    startr = -crude_delayest / downsample
-    startd = 0
-
-  nr = uttsearch_end[utt_id] - startr
-  nd = nr
-  if (startd + nd) > math.floor(deglen / downsample):
-    nd = math.floor(deglen / downsample) - startd
-
-  startr = max(0, startr)
-  startd = max(0, startd)
-
-  max_y = 0.
-  i_max_y = nr
-  if nr > 1 and nd > 1:
-    y = fftnxcorr(ref_logvad, startr, nr, deg_logvad, startd, nd)
-    i_max_y = np.argmax(y)
-    max_y = y[i_max_y]
-    if max_y <= 0:
-      max_y = 0
-      i_max_y = nr
-
-  return (i_max_y - nr) * downsample + crude_delayest
-
 def split_align(ref_data, ref_vad, ref_logvad,
                 deg_data, deg_vad, deg_logvad, sr):
   sr_mod = 'wb' if sr == 16000 else 'nb'
@@ -442,17 +339,17 @@ def split_align(ref_data, ref_vad, ref_logvad,
 
   for bp in range(n_bps - 1):
     utt_delayest[utt_test] = utt_delayest_1
-    uttsearch_start[utt_test] = utt_start_1
-    uttsearch_end[utt_test] = utt_bps[bp]
+    utt_starts[utt_test] = utt_start_1
+    utt_ends[utt_test] = utt_bps[bp]
 
-    crude_align_test(ref_logvad, reflen, deg_logvad, deglen)
+    align.crude_align_test(ref_logvad, reflen, deg_logvad, deglen)
     utt_ed1[bp] = utt_delay[utt_test]
 
     utt_delayest[utt_test] = utt_delayest_1
-    uttsearch_start[utt_test] = utt_bps[bp]
-    uttsearch_end[utt_test] = utt_end_1
+    utt_starts[utt_test] = utt_bps[bp]
+    utt_ends[utt_test] = utt_end_1
 
-    crude_align_test(ref_logvad, reflen, deg_logvad, deglen)
+    align.crude_align_test(ref_logvad, reflen, deg_logvad, deglen)
     utt_ed2[bp] = utt_delay[utt_test]
 
   utt_dc1[:n_bps-1] = -2.
@@ -655,8 +552,8 @@ def utterance_split(ref_data, ref_vad, ref_logvad,
     utt_delayest_1 = utt_delayest[utt_id]
     utt_delay_1 = utt_delay[utt_id]
     utt_delayconf_1 = utt_delayconf[utt_id]
-    utt_start_1 = utt_start[utt_id]
-    utt_end_1 = utt_end[utt_id]
+    utt_start_1 = utt_starts[utt_id]
+    utt_end_1 = utt_ends[utt_id]
 
     utt_speechstart = utt_start_1
     utt_speechstart = max(0, utt_speechstart)
@@ -678,10 +575,10 @@ def utterance_split(ref_data, ref_vad, ref_logvad,
           utt_delayest[step + 1] = utt_delayest[step]
           utt_delay[step + 1] = utt_delay[step]
           utt_delayconf[step + 1] = utt_delayconf[step]
-          utt_start[step + 1] = utt_start[step]
-          utt_end[step + 1] = utt_end[step]
-          uttsearch_start[step + 1] = utt_start[step]
-          uttsearch_end[step + 1] = utt_end[step]
+          utt_starts[step + 1] = utt_starts[step]
+          utt_ends[step + 1] = utt_ends[step]
+          utt_starts[step + 1] = utt_starts[step]
+          utt_ends[step + 1] = utt_ends[step]
 
         nutter += 1
 
@@ -693,24 +590,24 @@ def utterance_split(ref_data, ref_vad, ref_logvad,
         utt_delay[utt_id + 1] = best_d2
         utt_delayconf[utt_id + 1] = best_dc2
 
-        uttsearch_start[utt_id + 1] = uttsearch_start[utt_id]
-        uttsearch_end[utt_id + 1] = uttsearch_end[utt_id]
+        utt_starts[utt_id + 1] = utt_starts[utt_id]
+        utt_ends[utt_id + 1] = utt_ends[utt_id]
         if best_d2 < best_d1:
-          utt_start[utt_id] = utt_start_1
-          utt_end[utt_id] = best_bp
-          utt_start[utt_id + 1] = best_bp
-          utt_end[utt_id + 1] = utt_end_1
+          utt_starts[utt_id] = utt_start_1
+          utt_ends[utt_id] = best_bp
+          utt_starts[utt_id + 1] = best_bp
+          utt_ends[utt_id + 1] = utt_end_1
         else:
-          utt_start[utt_id] = utt_start_1
-          utt_end[utt_id] = best_bp + math.floor((best_d2 - best_d1) / (2 * downsample)) 
-          utt_start[utt_id + 1] = best_bp - math.floor((best_d2 - best_d1) / (2 * downsample))
-          utt_end[utt_id + 1] = utt_end_1
+          utt_starts[utt_id] = utt_start_1
+          utt_ends[utt_id] = best_bp + math.floor((best_d2 - best_d1) / (2 * downsample)) 
+          utt_starts[utt_id + 1] = best_bp - math.floor((best_d2 - best_d1) / (2 * downsample))
+          utt_ends[utt_id + 1] = utt_end_1
 
-        if ((utt_start[utt_id] - 75) * downsample + best_d1) < 0:
-          utt_start[utt_id] = 75 + math.floor((downsample - best_d1) / downsample)
+        if ((utt_starts[utt_id] - 75) * downsample + best_d1) < 0:
+          utt_starts[utt_id] = 75 + math.floor((downsample - best_d1) / downsample)
 
-        if (utt_end[utt_id + 1] * downsample + best_d2) > (deglen - 75 * downsample):
-          utt_end[utt_id + 1] = math.floor((deglen - best_d2) / downsample) - 75
+        if (utt_ends[utt_id + 1] * downsample + best_d2) > (deglen - 75 * downsample):
+          utt_ends[utt_id + 1] = math.floor((deglen - best_d2) / downsample) - 75
 
       else:
         utt_id += 1
@@ -718,173 +615,119 @@ def utterance_split(ref_data, ref_vad, ref_logvad,
     else:
       utt_id += 1
 
-  largest_uttsize = np.max(utt_end - utt_start)
+  largest_uttsize = np.max(utt_ends - utt_starts)
   return largest_uttsize
 
-def id_searchwindows(ref_vad, reflen, deg_vad, deglen, crude_delayest, sr):
+def id_searchwindows(ref_vad, reflen, deg_vad, deglen, 
+                     delayest, sr, minutter = 50, searchbuf = 75):
   sr_mod = 'wb' if sr == 16000 else 'nb'
   downsample = 32 if sr_mod == 'nb' else 64 
 
-  utt_num = 0
+  utt_num = 1
   speech_flag = 0
-  uttsearch_start = np.zeros(50)
-  uttsearch_end = np.zeros(50)
+  utt_starts = np.zeros(50)
+  utt_ends = np.zeros(50)
 
   vadlen = math.floor(reflen / downsample)
-  del_deg_start = 50 - crude_delayest / downsample
-  del_deg_end = math.floor((deglen - crude_delayest) / downsample) - 50
+  del_deg_start = minutter - delayest / downsample
+  del_deg_end = math.floor((deglen - delayest) / downsample) - minutter
 
   for count in range(vadlen):
     vad_val = ref_vad[count]
     if vad_val > 0 and speech_flag == 0:
       speech_flag = 1
       this_start = count
-      uttsearch_start[utt_num] = max(count - 75, 0)
+      utt_starts[utt_num - 1] = max(count - searchbuf, 0)
 
     if (vad_val == 0 or count == (vadlen - 2)) and speech_flag == 1:
       speech_flag = 0
-      uttsearch_end[utt_num] = min(count + 75, vadlen-1)
-      if (count - this_start) >= 50 and this_start < deg_del_end and count > del_deg_start:
+      utt_ends[utt_num - 1] = min(count + searchbuf, vadlen - 1)
+      if (count - this_start) >= minutter and this_start < del_deg_end and count > del_deg_start:
         utt_num += 1
 
   utt_num = utt_num - 1
-  return uttsearch_start[:utt_num], uttsearch_end[:utt_num]
+  return utt_starts[:utt_num], utt_ends[:utt_num]
 
-def time_align(ref_data, reflen, deg_data, deglen,
-               uttsearch_start, uttsearch_end, utt_delayest, utt_id, sr):
-  sr_mod = 'wb' if sr == 16000 else 'nb'
-  align_nfft = 512 if sr_mod == 'nb' else 1024
-
-  h = np.zeros(align_nfft)
-
-  estdelay = utt_delayest[utt_id]
-  startr = uttsearch_start[uttid] * downsample
-  startd = startr + estdelay
-  if startd < 0:
-    startr = -estdelay
-    startd = 0
-
-  while (startd + align_nfft) <= deglen and (startr + align_nfft) <= (uttsearch_end[utt_id] * downsample):
-    x1 = ref_data[startr : startr + align_nfft] * window
-    x2 = deg_data[startd : startd + align_nfft] * window
-
-    # cross-correlation between x1, x2
-    x1_fft = np.fft.fft(x1, align_nfft)
-    x1_fft_conj = np.conjugate(x1_fft)
-    x2_fft = np.fft.fft(x2, align_nfft)
-    x1 = np.fft.ifft(x1_fft_conj * x2_fft, align_nfft)
-
-    x1 = np.abs(x1)
-    v_max = np.max(x1) * 0.99
-
-    h[x1 > v_max] += v_max ** 0.125
-    startr += align_nfft / 4
-    startd += align_nfft / 4
-
-  x1 = h
-  x2 = np.zeros(align_nfft)
-  hsum = np.sum(h)
-
-  x2[0] = 1.
-  kernel = align_nfft / 64
-
-  for count in range(1, kernel):
-    x2[count] = 1 - count / kernel
-    x2[-count] = 1 - count / kernel
-
-  x1_fft = np.fft.fft(x1, align_nfft)
-  x2_fft = np.fft.fft(x2, align_nfft)
-
-  x1 = np.fft.ifft(x1_fft * x2_fft, align_nfft)
-
-  if hsum > 0:
-    h = np.abs(x1) / hsum
-  else:
-    h = 0
-
-  i_max = np.argmax(h)
-  v_max = h[i_max]
-  if i_max >= (align_nfft / 2):
-    i_max = i_max - align_nfft
-
-  return estdelay + i_max, v_max
-
-def id_utterances(reflen, ref_vad, deglen, crude_delayest, sr):
+def id_utterances(reflen, ref_vad, deglen, delayest, sr):
   sr_mod = 'wb' if sr == 16000 else 'nb'
   downsample = 32 if sr_mod == 'nb' else 64
 
   utt_num = 0
   speech_flag = 0
-  uttsearch_start = np.zeros(50)
-  uttsearch_end = np.zeros(50)
+  utt_starts = np.zeros(50)
+  utt_ends = np.zeros(50)
   
   vadlen = math.floor(reflen / downsample)
-  del_deg_start = 50 - crude_delayest / downsample
-  del_deg_end = math.floor((deglen - crude_delayest) / downsample) - 50
+  del_deg_start = 50 - delayest / downsample
+  del_deg_end = math.floor((deglen - delayest) / downsample) - 50
 
   for count in range(vadlen):
     vad_val = ref_vad[count]
     if vad_val > 0. and speech_flag == 0:
       speech_flag = 1
       this_start = count
-      utt_start[utt_num] = count
+      utt_starts[utt_num] = count
 
     if (vad_val == 0 or count == (vadlen-1)) and speech_flag == 1:
       speech_flag = 0
-      utt_end[utt_num] = count
+      utt_ends[utt_num] = count
 
       if (count - this_start) >= 50 and this_start < del_deg_end and count > del_deg_start:
         utt_num += 1
 
-  utt_start[0] = 75
+  utt_starts[0] = 75
   nutter = max(0, nutter)
-  utt_end[nutter] = vadlen - 75
+  utt_ends[nutter] = vadlen - 75
 
   for utt_num in range(1, nutter):
-    this_start = utt_start[utt_num]
-    last_end = utt_end[utt_num - 1]
+    this_start = utt_starts[utt_num]
+    last_end = utt_ends[utt_num - 1]
     count = math.floor((this_start + last_end) / 2)
-    utt_start[utt_num] = count
-    utt_end[utt_num - 1] = count
+    utt_starts[utt_num] = count
+    utt_ends[utt_num - 1] = count
 
-  this_start = utt_start[0] * downsample + utt_delay[0]
+  this_start = utt_starts[0] * downsample + utt_delay[0]
   if this_start < (75 * downsample):
     count = 75 + math.floor((downsample - 1 - utt_delay[0]) / downsample)
-    utt_start[0] = count
+    utt_starts[0] = count
 
-  last_end = utt_end[nutter] * downsample + utt_delay[nutter]
+  last_end = utt_ends[nutter] * downsample + utt_delay[nutter]
   if last_end > (deglen - 75 * downsample):
     count = math.floor((deglen - utt_delay[nutter]) / downsample) - 75
-    utt_end[nutter] = count
+    utt_ends[nutter] = count
 
   for utt_num in range(1, nutter):
-    this_start = utt_start[utt_num] * downsample + utt_delay[utt_num]
-    last_end = utt_end[utt_num - 1] * downsample + utt_delay[utt_num - 1]
+    this_start = utt_starts[utt_num] * downsample + utt_delay[utt_num]
+    last_end = utt_ends[utt_num - 1] * downsample + utt_delay[utt_num - 1]
     if this_start < last_end:
       count = math.floor((this_start + last_end) / 2)
       this_start = math.floor((downsample - 1 + count - utt_delay[utt_num]) / downsample)
       last_end = math.floor((count - utt_delay[utt_num - 1]) / downsample)
-      utt_start[utt_num] = this_start
-      utt_end[utt_num - 1] = last_end
+      utt_starts[utt_num] = this_start
+      utt_ends[utt_num - 1] = last_end
 
-  largest_uttsize = np.max(utt_end - utt_start)
+  largest_uttsize = np.max(utt_ends - utt_starts)
   return largest_uttsize
 
-def utterance_locate(ref_data, ref_vad, ref_logvad,
-                     deg_data, deg_vad, deg_logvad, crude_delayest):
+def utterance_locate(ref_data, reflen, ref_vad, ref_logvad,
+                     deg_data, deglen, deg_vad, deg_logvad, delayest, sr):
 
-  uttsearch_start, uttsearch_end = id_searchwindows(ref_vad, deg_vad)
-  nnum_utters = uttsearch_start.shape[0]
+  uttsearch_starts, uttsearch_ends = id_searchwindows(
+    ref_vad, reflen, deg_vad, deglen, delayest, sr)
+  num_utters = uttsearch_starts.shape[0]
 
   utt_delayest = np.zeros(50)
   utt_delay = np.zeros(50)
   utt_delayconf = np.zeros(50)
 
   for utt_id in range(num_utters):
-    utt_delayest[utt_id] = crude_align_utt(ref_logvad, deg_logvad,
-      uttsearch_start, uttsearch_end, utt_id, crude_delayest)
+    utt_delayest[utt_id] = align.crude_subalign(
+      ref_logvad, reflen, deg_logvad, deglen,
+      uttsearch_starts[utt_id], uttsearch_ends[utt_id], delayest, sr)
 
-    _utt_delay, _utt_delayconf = time_align(ref_data, deg_data, utt_id)
+    _utt_delay, _utt_delayconf = align.time_align(
+      ref_data, reflen, deg_data, deglen,
+      uttsearch_starts[utt_id], uttsearch_ends[utt_id], utt_delayest[utt_id], sr)
     utt_delay[utt_id] = _utt_delay
     utt_delayconf[utt_id] = _utt_delayconf
 
@@ -1044,7 +887,7 @@ def pesq_psychoacoustic_model(ref_data, deg_data, sr):
     hz_ref = short_term_fft(Nf, ref_data, window, start)
 
     utt = Nutter
-    while utt >= 0 and (utt_start[utt] * downsample) > start_sample_ref:
+    while utt >= 0 and (utt_starts[utt] * downsample) > start_sample_ref:
       utt -= 1
 
     delay = utt_delay[max(utt, 0)]
@@ -1118,13 +961,13 @@ def pesq_psychoacoustic_model(ref_data, deg_data, sr):
 
   frame_skipped = np.zeros(stop_frame)
   for utt in range(2, nutter):
-    frame1 = math.floor(((utt_start[utt] - 75) * downsample + utt_delay[utt]) / (Nf / 2))
-    j = math.floor(math.floor((utt_end[utt] - 75) * downsample + utt_delay[utt - 1]) / (Nf / 2))
+    frame1 = math.floor(((utt_starts[utt] - 75) * downsample + utt_delay[utt]) / (Nf / 2))
+    j = math.floor(math.floor((utt_ends[utt] - 75) * downsample + utt_delay[utt - 1]) / (Nf / 2))
     delay_jump = utt_delay[utt] - utt_delay[utt - 1]
     frame1 = max(min(frame1, j), 0)
 
     if delay_jump < -(Nf / 2):
-      frame2 = math.floor(((utt_start[utt] - 75) * downsample + max(0, np.abs(delay_jump))) / (Nf / 2))
+      frame2 = math.floor(((utt_starts[utt] - 75) * downsample + max(0, np.abs(delay_jump))) / (Nf / 2))
       for frame in range(frame1, frame2):
         if frame < stop_frame:
           frame_skipped[frame] = True
@@ -1135,7 +978,7 @@ def pesq_psychoacoustic_model(ref_data, deg_data, sr):
   tweaked_deg = np.zeros(nn)
   for i in range(75 * downsample, nn - 75 * downsample):
     utt = nutter
-    while utt >= 0 and (utt_start[utt] * downsample) > i:
+    while utt >= 0 and (utt_starts[utt] * downsample) > i:
       utt -= 1
 
     if utt >= 0:
@@ -1299,7 +1142,8 @@ def pesq_psychoacoustic_model(ref_data, deg_data, sr):
   pesq_mos = 4.5 - d_weight * d_indicator - a_weight * a_indicator
   return pesq_mos
 
-def apply_vad(data, datalen, sr):
+def apply_vad(data, datalen, sr,
+              minspeech=4, joinspeech=50):
   sr_mod = 'wb' if sr == 16000 else 'nb'
   downsample = 32 if sr_mod == 'nb' else 64
 
@@ -1322,8 +1166,9 @@ def apply_vad(data, datalen, sr):
     std_noise = 0
 
     vad_less = vad[vad <= level_thres]
-    level_noise = np.mean(vad_less)
+    level_noise = np.sum(vad_less)
     if vad_less.shape[0] > 0:
+      level_noise /= vad_less.shape[0]
       std_noise = np.sqrt(np.mean((vad_less - level_noise) ** 2))
     level_thres = 1.001 * (level_noise + 2 * std_noise)
     
@@ -1340,7 +1185,7 @@ def apply_vad(data, datalen, sr):
     level_thres = -1
 
   if vad_greater.shape[0] < nwindows:
-    level_noise = level_noise / (nwindows - vad_greater.shape[0])
+    level_noise /= (nwindows - vad_greater.shape[0])
   else:
     level_noise = 1
 
@@ -1355,8 +1200,8 @@ def apply_vad(data, datalen, sr):
       start = count
     if vad[count] <= 0. and vad[count-1] > 0.:
       finish = count
-      if (finish - start) <= 4:
-        vad[start : finish-1] = -vad[start : finish-1]
+      if (finish - start) <= minspeech:
+        vad[start : finish] *= -1
 
   if level_sig >= (level_noise * 1000):
     for count in range(1, nwindows):
@@ -1364,17 +1209,17 @@ def apply_vad(data, datalen, sr):
         start = count
       if vad[count] <= 0 and vad[count-1] > 0:
         finish = count
-        g = np.sum(vad[start : finish-1])
+        g = np.sum(vad[start : finish])
         if g < (3. * level_thres * (finish - start)):
-          vad[start : finish-1] = -vad[start : finish-1]
+          vad[start : finish] *= -1
 
   start = 0
   finish = 0
   for count in range(1, nwindows):
     if vad[count] > 0. and vad[count-1] <= 0.:
       start = count
-      if finish > 0 and (start - finish) <= 50:
-        vad[finish : start-1] = level_min
+      if finish > 0 and (start - finish) <= joinspeech:
+        vad[finish : start] = level_min
     if vad[count] <= 0. and vad[count-1] > 0.:
       finish = count
 
@@ -1456,8 +1301,9 @@ def pesq(ref_data, deg_data, sr):
   ref_vad, ref_logvad = apply_vad(ref_data, reflen, sr)
   deg_vad, deg_logvad = apply_vad(deg_data, deglen, sr)
 
-  crude_delayest = crude_align_whole(ref_logvad, deg_logvad, sr)
-  utterance_locate(ref_data, ref_vad, ref_logvad, deg_data, deg_vad, deg_logvad, crude_delayest)
+  delayest = align.crude_align(ref_logvad, reflen, deg_logvad, deglen, sr)
+  utterance_locate(ref_data, reflen, ref_vad, ref_logvad, 
+                   deg_data, deglen, deg_vad, deg_logvad, delayest, sr)
 
   ref_data = model_ref
   deg_data = model_deg
