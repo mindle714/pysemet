@@ -1,4 +1,3 @@
-import soundfile
 import numpy as np
 import math
 
@@ -204,6 +203,9 @@ def snr(clean_speech, processed_speech, sr):
 import pesq
 
 def composite(data1, data2, sr, alpha=0.95):
+  assert sr == 16000 or sr == 8000
+  sr_mod = 'wb' if sr == 16000 else 'nb'
+
   _len = min(data1.shape[0], data2.shape[0])
   data1 = data1[:_len] + eps
   data2 = data2[:_len] + eps
@@ -219,7 +221,6 @@ def composite(data1, data2, sr, alpha=0.95):
   segsnr_dist = snr(data1, data2, sr)
   segSNR = np.mean(segsnr_dist)
 
-  sr_mod = 'wb' if sr == 16000 else 'nb'
   # TODO pesq value slightly differ from MATLAB version; need to check
   pesq_mos = pesq.pesq(sr, data1, data2, mode=sr_mod)
   # convert to raw pesq on narrow-band case
