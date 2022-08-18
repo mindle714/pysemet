@@ -6,14 +6,6 @@ import align
 
 datapadding = 320
 
-filter_db = np.array([
-  [0, 50, 100, 125, 160, 200, 250, 300, 350, 400, 
-  500, 600, 630, 800, 1000, 1250, 1600, 2000, 2500, 3000, 
-  3250, 3500, 4000, 5000, 6300, 8000],
-  [-500, -500, -500, -500, -500, -500, -500, -500, 0, 0,  
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
-  0, -500, -500, -500, -500, -500]])
-
 def nextpow2(x):
   return 1 if x == 0 else 2 ** math.ceil(math.log2(x))
 
@@ -22,6 +14,14 @@ def fix_power_level(data, datalen, maxlen, sr, searchbuf = 75):
   downsample = 32 if sr_mod == 'nb' else 64
   bufsamp = searchbuf * downsample
   padsamp = datapadding * (sr // 1000)
+
+  filter_db = np.array([
+    [0, 50, 100, 125, 160, 200, 250, 300, 350, 400, 
+    500, 600, 630, 800, 1000, 1250, 1600, 2000, 2500, 3000, 
+    3250, 3500, 4000, 5000, 6300, 8000],
+    [-500, -500, -500, -500, -500, -500, -500, -500, 0, 0,  
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+    0, -500, -500, -500, -500, -500]])
 
   aligned = apply_filter(data, datalen, filter_db, sr)
   pow_above_300 = np.sum(aligned[bufsamp : datalen - bufsamp + padsamp] ** 2)
@@ -185,14 +185,13 @@ def freq_warping(hz_spectrum, nb, frame, sr):
 
   for bark_band in range(nb):
     n = per_bark_band[bark_band]
-    #_sum = sum([hz_spectrum[i] for i in range(n)])
-    _sum = 0
-    for i in range(n):
-      _sum += hz_spectrum[hz_band]
-      hz_band += 1
+
+    _sum = np.sum(hz_spectrum[hz_band : hz_band + n])
     _sum *= pow_corr_factor[bark_band]
     _sum *= sp
+
     pitch_pow_dens[bark_band] = _sum
+    hz_band += n
 
   return pitch_pow_dens
 
@@ -253,7 +252,7 @@ def total_audible(frame, pitch_pow_dens, factor, sr):
 
   return total_audible_pow
 
-def time_avg_audible_of(nframes, silent, pitch_pow_dens, ntot, sr):
+def time_sum_audible_of(silent, pitch_pow_dens, sr):
   sr_mod = 'wb' if sr == 16000 else 'nb'
   abs_thresh_pow = get_abs_thresh_pow(sr)
   Nb = 42 if sr_mod == 'nb' else 49 
@@ -261,24 +260,24 @@ def time_avg_audible_of(nframes, silent, pitch_pow_dens, ntot, sr):
   avg_pitch_pow_dens = np.zeros(Nb)
   for band in range(Nb):
     result = 0
-    for frame in range(nframes):
+    for frame in range(silent.shape[0]):
       if not silent[frame]:
         h = pitch_pow_dens[frame, band]
         if h > (100 * abs_thresh_pow[band]):
           result += h
-      avg_pitch_pow_dens[band] = result / ntot
+      avg_pitch_pow_dens[band] = result
 
   return avg_pitch_pow_dens
 
 def freq_resp_compensation(nframes, pitch_pow_dens_ref, 
-                           avg_pitch_pow_dens_ref, avg_pitch_pow_dens_deg, constant, sr):
+                           avg_pitch_pow_dens_ref, avg_pitch_pow_dens_deg, c, sr):
   sr_mod = 'wb' if sr == 16000 else 'nb'
   Nb = 42 if sr_mod == 'nb' else 49 
 
   mod_pitch_pow_dens_ref = np.zeros_like(pitch_pow_dens_ref)
 
   for band in range(Nb):
-    x = (avg_pitch_pow_dens_deg[band] + constant) / (avg_pitch_pow_dens_ref[band] + constant)
+    x = (avg_pitch_pow_dens_deg[band] + c) / (avg_pitch_pow_dens_ref[band] + c)
     x = max(min(x, 100.), 0.01)
 
     for frame in range(nframes):
@@ -481,9 +480,9 @@ def utterance_locate(ref_data, reflen, ref_vad, ref_logvad,
         utt_delayest[utt_id + 1] = best_ed2
         utt_delay[utt_id + 1] = best_d2
         utt_delayconf[utt_id + 1] = best_dc2
-
         utt_starts[utt_id + 1] = utt_starts[utt_id]
         utt_ends[utt_id + 1] = utt_ends[utt_id]
+
         if best_d2 < best_d1:
           utt_starts[utt_id] = _utt_start
           utt_ends[utt_id] = best_bp
@@ -584,7 +583,6 @@ def compute_delay(start, stop, search_range, t1, t2):
 
   x1 = np.zeros(pow_of_2)
   x2 = np.zeros(pow_of_2)
-  y = np.zeros(pow_of_2)
 
   x1[:n] = np.abs(t1[start:stop])
   x2[:n] = np.abs(t2[start:stop])
@@ -635,6 +633,122 @@ def lpq_weight(start, stop, pow_syl, pow_time,
   result_time /= tot_time
   result_time **= (1 / pow_time)
   return result_time
+
+def process_bad(frame_disturbance):
+  stop_frame = frame_disturbance.shape[0] - 1
+
+  frame_bad = [(fd > threshold_bad_frame) for frame in frame_disturbance]
+  frame_bad[0] = False
+
+  smear_range = 2
+
+  smear_frame_bad = [False for _ in range(stop_frame + 1)]
+  for frame in range(smear_range, stop_frame - smear_range):
+    max_left = np.max(frame_bad[frame - smear_range : frame])
+    max_right = np.max(frame_bad[frame : frame + smear_range])
+    smear_frame_bad[frame] = min(max_left, max_right)
+
+  minimum_bad_frame_in_interval = 5
+  num_bad_interval = 0
+  frame = 0
+
+  while frame <= stop_frame:
+    while frame <= stop_frame and not smear_frame_bad[frame]:
+      frame += 1
+
+    if frame <= stop_frame:
+      start_frame_bad_interval[num_bad_interval] = frame
+      while frame <= stop_frame and smear_frame_bad[frame]:
+        frame += 1
+
+      if frame <= stop_frame:
+        stop_frame_bad_interval[num_bad_interval] = frame
+        if (stop_frame_bad_interval[num_bad_interval] - start_frame_bad_interval[num_bad_interval]) >= minimum_bad_frame_in_interval:
+          num_bad_interval += 1
+
+  for bad_interval in range(num_bad_interval):
+    start_samp_bad_interval[bad_interval] = (start_frame_bad_interval[bad_interval] * (Nf / 2)) + bufsamp
+    stop_samp_bad_interval[bad_interval] = (stop_frame_bad_interval[bad_interval] * (Nf / 2)) + bufsamp
+    if stop_frame_bad_interval[bad_interval] > stop_frame:
+      stop_frame_bad_interval[bad_interval] = stop_frame
+
+    num_samp_bad_interval[bad_interval] = stop_samp_bad_interval[bad_interval] - start_samp_bad_interval[bad_interval]
+
+  search_range = 4
+  search_range_samp = search_range * Nf
+
+  for bad_interval in range(num_bad_interval):
+    num_samp = num_samp_bad_interval[bad_interval]
+    ref = np.zeros(2 * search_range_samp + num_samp)
+    deg = np.zeros(2 * search_range_samp + num_samp)
+
+    start_samp = start_samp_bad_interval[bad_interval]
+    ref[search_range_samp:][:num_samp] = ref_data[start_samp:][:num_samp]
+
+    for i in range(deg.shape[0]):
+      j = start_samp - search_range + i
+      nn = maxlen - bufsamp + padsamp
+      j = max(min(j, nn), bufsamp)
+      deg[i] = tweaked_deg[j]
+
+    delay_samp, best_corr = compute_delay(0, 2 * search_range_samp + num_samp, search_range_samp, ref, deg)
+    delay_samp_bad_interval[bad_interval] = delay_samp
+    if best_corr < 0.5:
+      delay_samp_bad_interval[bad_interval] = 0
+
+  if num_bad_interval > 0:
+    doubly_tweaked_deg = tweaked_deg[:maxlen + padsamp]
+    for bad_interval in range(num_bad_interval):
+      delay = delay_samp_bad_interval[bad_interval]
+
+      for i in range(start_samp_bad_interval[bad_interval], stop_samp_bad_interval[bad_interval]):
+        j = i + delay
+        j = max(min(j, maxlen), 0)
+        doubly_tweaked_deg[i] = tweaked_deg[j]
+
+      untweaked_deg = deg_data
+      deg_data = doubly_tweaked_deg
+
+      for bad_interval in range(num_bad_interval):
+        for frame in range(start_frame_bad_interval[bad_interval], stop_frame_bad_interval[bad_interval]):
+          start_samp_ref = searchbuf * downsample + (frame * Nf / 2)
+          start_samp_deg = start_samp_ref
+          hz_deg = short_term_fft(Nf, deg_data, window, start_samp_deg)
+          pitch_pow_dens_deg[frame, :] = freq_warping(hz_deg, Nb, frame)
+
+        old_scale = 1
+        for frame in range(start_frame_bad_interval[bad_interval], stop_frame_bad_interval[bad_interval]):
+          total_audible_pow_ref = total_audible(frame, pitch_pow_dens_ref, 1)
+          total_audible_pow_deg = total_audible(frame, pitch_pow_dens_deg, 1)
+          scale = (total_audible_pow_ref + 5e3) / (total_audible_pow_deg + 5e3)
+
+          if frame > 0:
+            scale = 0.2 * old_scale + 0.8 * scale
+          old_scale = scale
+          scale = max(min(scale, max_scale), min_scale)
+
+          pitch_pow_dens_deg[frame, :] *= scale
+          loudness_dens_ref = intensity_warping_of(frame, pitch_pow_dens_ref) 
+          loudness_dens_deg = intensity_warping_of(frame, pitch_pow_dens_deg)
+          disturbance_dens = loudness_dens_deg - loudness_dens_ref
+
+          for band in range(Nb):
+            m = min(loudness_dens_deg[band], loudness_dens_ref[band]) * 0.25
+            d = disturbance_dens[band]
+
+            if d > m:
+              disturbance_dens[band] -= m
+            else:
+              if d < -m:
+                disturbance_dens[band] += m
+              else:
+                disturbance_dens[band] = 0
+
+          frame_disturbance[frame] = min(frame_disturbance[frame], pseudo_lp(disturbance_dens, d_pow_f))
+          disturbance_dens = multiply_with_asymm_factor(disturbance_dens, frame, pitch_pow_dens_ref, pitch_pow_dens_deg)
+          frame_disturbance_asym_add[frame] = min(frame_disturbance_asym_add[frame], pseudo_lp(disturbance_dens, a_pow_f))
+            
+      deg_data = untweaked_deg   
 
 def pesq_psychoacoustic_model(ref_data, reflen, deg_data, deglen, sr,
                               utt_starts, utt_ends, utt_delay, nutter, 
@@ -703,12 +817,9 @@ def pesq_psychoacoustic_model(ref_data, reflen, deg_data, deglen, sr,
     total_audible_pow_deg = total_audible(frame, pitch_pow_dens_deg, 1e2, sr)
     silent[frame] = total_audible_pow_ref < 1e7
 
-  avg_pitch_pow_dens_ref = time_avg_audible_of(
-    stop_frame + 1, silent, pitch_pow_dens_ref,
-    math.floor((maxlen - 2 * bufsamp + padsamp) / (Nf / 2)) - 1, sr)
-  avg_pitch_pow_dens_deg = time_avg_audible_of(
-    stop_frame + 1, silent, pitch_pow_dens_deg,
-    math.floor((maxlen - 2 * bufsamp + padsamp) / (Nf / 2)) - 1, sr)
+  denom = math.floor((maxlen - 2 * bufsamp + padsamp) / (Nf / 2)) - 1
+  avg_pitch_pow_dens_ref = time_sum_audible_of(silent, pitch_pow_dens_ref, sr) / denom
+  avg_pitch_pow_dens_deg = time_sum_audible_of(silent, pitch_pow_dens_deg, sr) / denom
 
   calibrate = False
   if not calibrate:
@@ -796,132 +907,7 @@ def pesq_psychoacoustic_model(ref_data, reflen, deg_data, deglen, sr,
     tweaked_deg[i] = deg_data[int(j)]
 
   if bad_frame:
-    for frame in range(stop_frame + 1):
-      frame_bad[frame] = (frame_disturbance[frame] > threshold_bad_frame)
-      smeared_frame_bad[frame] = False
-    frame_bad[0] = False
-
-    smear_range = 2
-
-    for frame in range(smear_range, stop_frame - smear_range):
-      max_left = frame_bad[frame]
-      max_right = frame_bad[frame]
-
-      for i in range(-smear_range, 1):
-        if max_left < frame_bad[frame + i]:
-          max_left = frame_bad[frame + i]
-
-      for i in range(smear_range + 1):
-        if max_right < frame_bad[frame + i]:
-          max_right = frame_bad[frame + i]
-
-      mini = max_left
-      if mini > max_right:
-        mini = max_right
-
-      smear_frame_bad[frame] = mini
-
-    minimum_bad_frame_in_interval = 5
-    num_bad_interval = 0
-    frame = 0
-
-    while frame <= stop_frame:
-      while frame <= stop_frame and not smear_frame_bad[frame]:
-        frame += 1
-
-      if frame <= stop_frame:
-        start_frame_bad_interval[num_bad_interval] = frame
-        while frame <= stop_frame and smear_frame_bad[frame]:
-          frame += 1
-
-        if frame <= stop_frame:
-          stop_frame_bad_interval[num_bad_interval] = frame
-          if (stop_frame_bad_interval[num_bad_interval] - start_frame_bad_interval[num_bad_interval]) >= minimum_bad_frame_in_interval:
-            num_bad_interval += 1
-
-    for bad_interval in range(num_bad_interval):
-      start_samp_bad_interval[bad_interval] = (start_frame_bad_interval[bad_interval] * (Nf / 2)) + bufsamp
-      stop_samp_bad_interval[bad_interval] = (stop_frame_bad_interval[bad_interval] * (Nf / 2)) + bufsamp
-      if stop_frame_bad_interval[bad_interval] > stop_frame:
-        stop_frame_bad_interval[bad_interval] = stop_frame
-
-      num_samp_bad_interval[bad_interval] = stop_samp_bad_interval[bad_interval] - start_samp_bad_interval[bad_interval]
-
-    search_range = 4
-    search_range_samp = search_range * Nf
-
-    for bad_interval in range(num_bad_interval):
-      num_samp = num_samp_bad_interval[bad_interval]
-      ref = np.zeros(2 * search_range_samp + num_samp)
-      deg = np.zeros(2 * search_range_samp + num_samp)
-
-      start_samp = start_samp_bad_interval[bad_interval]
-      ref[search_range_samp:][:num_samp] = ref_data[start_samp:][:num_samp]
-
-      for i in range(deg.shape[0]):
-        j = start_samp - search_range + i
-        nn = maxlen - bufsamp + padsamp
-        j = max(min(j, nn), bufsamp)
-        deg[i] = tweaked_deg[j]
-
-      delay_samp, best_corr = compute_delay(0, 2 * search_range_samp + num_samp, search_range_samp, ref, deg)
-      delay_samp_bad_interval[bad_interval] = delay_samp
-      if best_corr < 0.5:
-        delay_samp_bad_interval[bad_interval] = 0
-
-    if num_bad_interval > 0:
-      doubly_tweaked_deg = tweaked_deg[:maxlen + padsamp]
-      for bad_interval in range(num_bad_interval):
-        delay = delay_samp_bad_interval[bad_interval]
-
-        for i in range(start_samp_bad_interval[bad_interval], stop_samp_bad_interval[bad_interval]):
-          j = i + delay
-          j = max(min(j, maxlen), 0)
-          doubly_tweaked_deg[i] = tweaked_deg[j]
-
-        untweaked_deg = deg_data
-        deg_data = doubly_tweaked_deg
-
-        for bad_interval in range(num_bad_interval):
-          for frame in range(start_frame_bad_interval[bad_interval], stop_frame_bad_interval[bad_interval]):
-            start_samp_ref = searchbuf * downsample + (frame * Nf / 2)
-            start_samp_deg = start_samp_ref
-            hz_deg = short_term_fft(Nf, deg_data, window, start_samp_deg)
-            pitch_pow_dens_deg[frame, :] = freq_warping(hz_deg, Nb, frame)
-
-          old_scale = 1
-          for frame in range(start_frame_bad_interval[bad_interval], stop_frame_bad_interval[bad_interval]):
-            total_audible_pow_ref = total_audible(frame, pitch_pow_dens_ref, 1)
-            total_audible_pow_deg = total_audible(frame, pitch_pow_dens_deg, 1)
-            scale = (total_audible_pow_ref + 5e3) / (total_audible_pow_deg + 5e3)
-
-            if frame > 0:
-              scale = 0.2 * old_scale + 0.8 * scale
-            old_scale = scale
-            scale = max(min(scale, max_scale), min_scale)
-
-            pitch_pow_dens_deg[frame, :] *= scale
-            loudness_dens_ref = intensity_warping_of(frame, pitch_pow_dens_ref) 
-            loudness_dens_deg = intensity_warping_of(frame, pitch_pow_dens_deg)
-            disturbance_dens = loudness_dens_deg - loudness_dens_ref
-
-            for band in range(Nb):
-              m = min(loudness_dens_deg[band], loudness_dens_ref[band]) * 0.25
-              d = disturbance_dens[band]
-
-              if d > m:
-                disturbance_dens[band] -= m
-              else:
-                if d < -m:
-                  disturbance_dens[band] += m
-                else:
-                  disturbance_dens[band] = 0
-
-            frame_disturbance[frame] = min(frame_disturbance[frame], pseudo_lp(disturbance_dens, d_pow_f))
-            disturbance_dens = multiply_with_asymm_factor(disturbance_dens, frame, pitch_pow_dens_ref, pitch_pow_dens_deg)
-            frame_disturbance_asym_add[frame] = min(frame_disturbance_asym_add[frame], pseudo_lp(disturbance_dens, a_pow_f))
-            
-        deg_data = untweaked_deg   
+    process_bad()
 
   for frame in range(stop_frame + 1):
     h = 1
