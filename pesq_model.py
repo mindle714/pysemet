@@ -465,9 +465,9 @@ def process_bad(frame_disturbance):
             
       deg_data = untweaked_deg   
 
-def pesq_psychoacoustic_model(ref_data, reflen, deg_data, deglen, sr,
-                              utt_starts, utt_ends, utt_delay, nutter, 
-                              searchbuf = 75, silence_5samp = 500):
+def pesq_model(ref_data, reflen, deg_data, deglen, sr,
+               utt_starts, utt_ends, utt_delay, nutter, 
+               searchbuf = 75, silence_5samp = 500):
   sr_mod = 'wb' if sr == 16000 else 'nb'
   downsample = 32 if sr_mod == 'nb' else 64 
   bufsamp = searchbuf * downsample
