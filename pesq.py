@@ -180,13 +180,21 @@ def freq_warping(hz_spectrum, nb, frame, sr):
         79.546974
     ])
 
+  hz_band = 0
   pitch_pow_dens = np.zeros(nb)
+
   for bark_band in range(nb):
     n = per_bark_band[bark_band]
-    _sum = sum([hz_spectrum[i] for i in range(n)])
+    #_sum = sum([hz_spectrum[i] for i in range(n)])
+    _sum = 0
+    for i in range(n):
+      _sum += hz_spectrum[hz_band]
+      hz_band += 1
     _sum *= pow_corr_factor[bark_band]
     _sum *= sp
     pitch_pow_dens[bark_band] = _sum
+
+  return pitch_pow_dens
 
 def get_abs_thresh_pow(sr):
   sr_mod = 'wb' if sr == 16000 else 'nb'
@@ -612,7 +620,7 @@ def lpq_weight(start, stop, pow_syl, pow_time,
     result_syl = 0
     count_syl = 0
 
-    for frame in range(start, start + per_syl):
+    for frame in range(start_syl, start_syl + per_syl):
       if frame <= stop:
         h = frame_disturbance[frame]
         result_syl += h ** pow_syl
@@ -637,7 +645,7 @@ def pesq_psychoacoustic_model(ref_data, reflen, deg_data, deglen, sr,
   padsamp = datapadding * (sr // 1000)
 
   Nf = downsample * 8
-  window = 0.5 * (1 - np.cos(2 * np.pi * (np.arange(Nf) / (Nf-1))))
+  window = 0.5 * (1 - np.cos(2 * np.pi * (np.arange(Nf) / Nf)))
   Nb = 42 if sr_mod == 'nb' else 49 
   
   maxlen = max(reflen, deglen)
@@ -652,7 +660,7 @@ def pesq_psychoacoustic_model(ref_data, reflen, deg_data, deglen, sr,
   
   skip_end = 0
   while True:
-    pos = maxlen - bufsamp + padsamp - 1 - skip_end
+    pos = maxlen - bufsamp + padsamp - 5 - skip_end
     samp_sum = np.sum(np.abs(ref_data[pos : pos + 5]))
     if samp_sum < silence_5samp: skip_end += 1
     if not ((samp_sum < silence_5samp) and (skip_end < maxlen / 2)): break
@@ -660,8 +668,8 @@ def pesq_psychoacoustic_model(ref_data, reflen, deg_data, deglen, sr,
   start_frame = math.floor(skip_start / (Nf / 2))
   stop_frame = math.floor((maxlen - 2 * bufsamp + padsamp - skip_end) / (Nf / 2)) - 1
 
-  power_ref = np.mean(ref_data[bufsamp : -bufsamp + padsamp] ** 2)
-  power_deg = np.mean(deg_data[bufsamp : -bufsamp + padsamp] ** 2)
+  power_ref = np.mean(ref_data[bufsamp : maxlen - bufsamp + padsamp] ** 2)
+  power_deg = np.mean(deg_data[bufsamp : maxlen - bufsamp + padsamp] ** 2)
 
   pitch_pow_dens_ref = np.zeros((stop_frame + 1, Nb))
   pitch_pow_dens_deg = np.zeros((stop_frame + 1, Nb))
@@ -671,12 +679,10 @@ def pesq_psychoacoustic_model(ref_data, reflen, deg_data, deglen, sr,
   frame_disturbance = np.zeros(stop_frame + 1)
   frame_disturbance_asym_add = np.zeros(stop_frame + 1)
   tw = np.zeros(stop_frame + 1)
-  total_pow_ref = np.zeros(stop_frame + 1)
 
   for frame in range(stop_frame + 1):
     start_sample_ref = bufsamp + frame * Nf / 2 
-    start = bufsamp + frame * (Nf / 2)
-    hz_ref = short_term_fft(Nf, ref_data, window, start)
+    hz_ref = short_term_fft(Nf, ref_data, window, start_sample_ref)
 
     utt = nutter - 1
     while utt >= 0 and (utt_starts[utt] * downsample) > start_sample_ref:
@@ -706,7 +712,7 @@ def pesq_psychoacoustic_model(ref_data, reflen, deg_data, deglen, sr,
 
   calibrate = False
   if not calibrate:
-    pitch_pow_dens_ref = freq_resp_compensation(stop_frame,
+    pitch_pow_dens_ref = freq_resp_compensation(stop_frame + 1,
       pitch_pow_dens_ref, avg_pitch_pow_dens_ref, avg_pitch_pow_dens_deg, 1000, sr)
 
   d_pow_f = 2
@@ -733,18 +739,16 @@ def pesq_psychoacoustic_model(ref_data, reflen, deg_data, deglen, sr,
     old_scale = scale
 
     scale = max(min(scale, max_scale), min_scale)
-    pitch_pow_dens_deg[frame, :] = pitch_pow_dens_deg[frame, :] * scale
+    pitch_pow_dens_deg[frame, :] *= scale
 
     loudness_dens_ref = intensity_warping_of(frame, pitch_pow_dens_ref, sr)
     loudness_dens_deg = intensity_warping_of(frame, pitch_pow_dens_deg, sr)
     disturbance_dens = loudness_dens_deg - loudness_dens_ref
 
-    deadzone = np.zeros(Nb)
     for band in range(Nb):
       m = 0.25 * min(loudness_dens_deg[band], loudness_dens_ref[band])
-      deadzone[band] = m
-
       d = disturbance_dens[band]
+
       if d > m:
         disturbance_dens[band] -= m
       else:
@@ -760,16 +764,16 @@ def pesq_psychoacoustic_model(ref_data, reflen, deg_data, deglen, sr,
     disturbance_dens = multiply_with_asymm_factor(disturbance_dens, frame, pitch_pow_dens_ref, pitch_pow_dens_deg, sr)
     frame_disturbance_asym_add[frame] = pseudo_lp(disturbance_dens, a_pow_f, sr)
 
-  frame_skipped = np.zeros(stop_frame)
-  for utt in range(2, nutter):
+  frame_skipped = [False for _ in range(stop_frame + 1)]
+  for utt in range(1, nutter):
     frame1 = math.floor(((utt_starts[utt] - searchbuf) * downsample + utt_delay[utt]) / (Nf / 2))
-    j = math.floor(math.floor((utt_ends[utt] - searchbuf) * downsample + utt_delay[utt - 1]) / (Nf / 2))
+    j = math.floor(math.floor((utt_ends[utt - 1] - searchbuf) * downsample + utt_delay[utt - 1]) / (Nf / 2))
     delay_jump = utt_delay[utt] - utt_delay[utt - 1]
     frame1 = max(min(frame1, j), 0)
 
     if delay_jump < -(Nf / 2):
-      frame2 = math.floor(((utt_starts[utt] - searchbuf) * downsample + max(0, np.abs(delay_jump))) / (Nf / 2))
-      for frame in range(frame1, frame2):
+      frame2 = math.floor(((utt_starts[utt] - searchbuf) * downsample + max(0, np.abs(delay_jump))) / (Nf / 2)) + 1
+      for frame in range(frame1, frame2 + 1):
         if frame < stop_frame:
           frame_skipped[frame] = True
           frame_disturbance[frame] = 0
@@ -788,21 +792,26 @@ def pesq_psychoacoustic_model(ref_data, reflen, deg_data, deglen, sr,
       delay = utt_delay[0]
 
     j = i + delay
-    j = max(min(j, nn - bufsamp), bufsamp)
+    j = max(min(j, nn - bufsamp - 1), bufsamp)
     tweaked_deg[i] = deg_data[int(j)]
 
   if bad_frame:
-    for frame in range(stop_frame):
+    for frame in range(stop_frame + 1):
       frame_bad[frame] = (frame_disturbance[frame] > threshold_bad_frame)
       smeared_frame_bad[frame] = False
     frame_bad[0] = False
-    smear_range = 1
+
+    smear_range = 2
 
     for frame in range(smear_range, stop_frame - smear_range):
       max_left = frame_bad[frame]
       max_right = frame_bad[frame]
 
-      for i in range(-smear_range, 0, -1):
+      for i in range(-smear_range, 1):
+        if max_left < frame_bad[frame + i]:
+          max_left = frame_bad[frame + i]
+
+      for i in range(smear_range + 1):
         if max_right < frame_bad[frame + i]:
           max_right = frame_bad[frame + i]
 
@@ -836,26 +845,23 @@ def pesq_psychoacoustic_model(ref_data, reflen, deg_data, deglen, sr,
       if stop_frame_bad_interval[bad_interval] > stop_frame:
         stop_frame_bad_interval[bad_interval] = stop_frame
 
-      num_samp_bad_interval[bad_interval] = stop_samp_bad_interval[bad_interval] - start_samp_bad_interval[bad_interval] + 1
+      num_samp_bad_interval[bad_interval] = stop_samp_bad_interval[bad_interval] - start_samp_bad_interval[bad_interval]
 
     search_range = 4
     search_range_samp = search_range * Nf
 
     for bad_interval in range(num_bad_interval):
-      ref = np.zeros(2 * search_range_samp + num_samp_bad_interval[bad_interval])
-      deg = np.zeros(2 * search_range_samp + num_samp_bad_interval[bad_interval])
-
       num_samp = num_samp_bad_interval[bad_interval]
-      start_samp = start_samp_bad_interval[bad_interval]
+      ref = np.zeros(2 * search_range_samp + num_samp)
+      deg = np.zeros(2 * search_range_samp + num_samp)
 
-      ref[:search_range_samp] = 0
+      start_samp = start_samp_bad_interval[bad_interval]
       ref[search_range_samp:][:num_samp] = ref_data[start_samp:][:num_samp]
-      ref[search_range_samp + num_samp:] = 0
 
       for i in range(deg.shape[0]):
         j = start_samp - search_range + i
-        nn = maxlen - searchbuf * downsample + padsamp
-        j = max(min(j, nn), searchbuf * downsample)
+        nn = maxlen - bufsamp + padsamp
+        j = max(min(j, nn), bufsamp)
         deg[i] = tweaked_deg[j]
 
       delay_samp, best_corr = compute_delay(0, 2 * search_range_samp + num_samp, search_range_samp, ref, deg)
@@ -871,25 +877,22 @@ def pesq_psychoacoustic_model(ref_data, reflen, deg_data, deglen, sr,
         for i in range(start_samp_bad_interval[bad_interval], stop_samp_bad_interval[bad_interval]):
           j = i + delay
           j = max(min(j, maxlen), 0)
-          h = tweaked_deg[j]
-          doubly_tweaked_deg[i] = h
+          doubly_tweaked_deg[i] = tweaked_deg[j]
 
         untweaked_deg = deg_data
         deg_data = doubly_tweaked_deg
 
         for bad_interval in range(num_bad_interval):
           for frame in range(start_frame_bad_interval[bad_interval], stop_frame_bad_interval[bad_interval]):
-            frame -= 1
             start_samp_ref = searchbuf * downsample + (frame * Nf / 2)
             start_samp_deg = start_samp_ref
             hz_deg = short_term_fft(Nf, deg_data, window, start_samp_deg)
             pitch_pow_dens_deg[frame, :] = freq_warping(hz_deg, Nb, frame)
 
-          old_scale = 0
+          old_scale = 1
           for frame in range(start_frame_bad_interval[bad_interval], stop_frame_bad_interval[bad_interval]):
-            frame -= 1
-            total_audible_pow_ref = total_audible(frame, pitch_pow_dens_ref, 0)
-            total_audible_pow_deg = total_audible(frame, pitch_pow_dens_deg, 0)
+            total_audible_pow_ref = total_audible(frame, pitch_pow_dens_ref, 1)
+            total_audible_pow_deg = total_audible(frame, pitch_pow_dens_deg, 1)
             scale = (total_audible_pow_ref + 5e3) / (total_audible_pow_deg + 5e3)
 
             if frame > 0:
@@ -897,14 +900,13 @@ def pesq_psychoacoustic_model(ref_data, reflen, deg_data, deglen, sr,
             old_scale = scale
             scale = max(min(scale, max_scale), min_scale)
 
-            pitch_pow_dens_deg[frame, :] = pitch_pow_dens_deg[frame, :] * scale
+            pitch_pow_dens_deg[frame, :] *= scale
             loudness_dens_ref = intensity_warping_of(frame, pitch_pow_dens_ref) 
             loudness_dens_deg = intensity_warping_of(frame, pitch_pow_dens_deg)
             disturbance_dens = loudness_dens_deg - loudness_dens_ref
 
             for band in range(Nb):
               m = min(loudness_dens_deg[band], loudness_dens_ref[band]) * 0.25
-              deadzone[band] = m
               d = disturbance_dens[band]
 
               if d > m:
@@ -921,28 +923,28 @@ def pesq_psychoacoustic_model(ref_data, reflen, deg_data, deglen, sr,
             
         deg_data = untweaked_deg   
 
-  for frame in range(stop_frame):
-    h = 0
-    if stop_frame > 1000:
+  for frame in range(stop_frame + 1):
+    h = 1
+    if (stop_frame + 1) > 1000:
       n = math.floor((maxlen - 2 * searchbuf * downsample) / (Nf / 2)) - 1
       twf = min((n - 1000) / 5500, 0.5)
       h = (1. - twf) + twf * frame / n
 
     tw[frame] = h
   
-  for frame in range(stop_frame):
-    h = ((total_pow_ref[frame] + 1e5) / 1e7) ** 0.04
+  for frame in range(stop_frame + 1):
+    h = ((total_power_ref[frame] + 1e5) / 1e7) ** 0.04
     frame_disturbance[frame] /= h
     frame_disturbance_asym_add[frame] /= h
     frame_disturbance[frame] = min(frame_disturbance[frame], 45)
     frame_disturbance_asym_add[frame] = min(frame_disturbance_asym_add[frame], 45)
 
-  d_indicator = lpq_weight(start_frame, stop_frame, d_pow_s, d_pow_t, frame_disturbance, tw)
-  a_indicator = lpq_weight(start_frame, stop_frame, a_pow_s, a_pow_t, frame_disturbance_asym_add, tw)
+  d_ind = lpq_weight(start_frame, stop_frame, d_pow_s, d_pow_t, frame_disturbance, tw)
+  a_ind = lpq_weight(start_frame, stop_frame, a_pow_s, a_pow_t, frame_disturbance_asym_add, tw)
 
   d_weight = 0.1
   a_weight = 0.0309
-  pesq_mos = 4.5 - d_weight * d_indicator - a_weight * a_indicator
+  pesq_mos = 4.5 - d_weight * d_ind - a_weight * a_ind
   return pesq_mos
 
 def apply_vad(data, datalen, sr,

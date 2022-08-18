@@ -8,12 +8,13 @@ data2, sr2 = soundfile.read("enhanced_logmmse.wav")
 assert sr1 == sr2
 print(sr1)
 
-sr_mod = 'wb' if sr1 == 16000 else 'nb'
-pesq_mos = pesq.pesq(sr1, data1, data2, mode=sr_mod)
+#sr_mod = 'wb' if sr1 == 16000 else 'nb'
+#pesq_mos = pesq.pesq(sr1, data1, data2, mode=sr_mod)
+raw_mos, pesq_mos = pesq.pesq(data1, data2, sr=sr1)
 # convert to raw pesq on narrow-band case
-if sr_mod == 'nb':
-  pesq_mos = (math.log((4./(pesq_mos - 0.999))-1.)-4.6607) / -1.4945
-print(pesq_mos)
+#if sr_mod == 'nb':
+#  pesq_mos = (math.log((4./(pesq_mos - 0.999))-1.)-4.6607) / -1.4945
+print(raw_mos, pesq_mos)
 
-csig, cbak, covl, segsnr = composite.composite(data1, data2, sr1)
-print(csig, cbak, covl, segsnr)
+#csig, cbak, covl, segsnr = composite.composite(data1, data2, sr1)
+#print(csig, cbak, covl, segsnr)
