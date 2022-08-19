@@ -285,8 +285,8 @@ def compute_delay(start, stop, search_range, t1, t2):
   n = stop - start
   pow_of_2 = 2 ** math.ceil(math.log2(2 * n))
 
-  pow1 = np.mean(t1[start : stop] ** 2) * (n / pow_of_2)
-  pow2 = np.mean(t2[start : stop] ** 2) * (n / pow_of_2)
+  pow1 = np.mean(t1[int(start) : int(stop)] ** 2) * (n / pow_of_2)
+  pow2 = np.mean(t2[int(start) : int(stop)] ** 2) * (n / pow_of_2)
   normalization = np.sqrt(pow1 * pow2)
 
   if pow1 <= 1e-6 or pow2 <= 1e-6:
@@ -296,8 +296,8 @@ def compute_delay(start, stop, search_range, t1, t2):
   x1 = np.zeros(pow_of_2)
   x2 = np.zeros(pow_of_2)
 
-  x1[:n] = np.abs(t1[start:stop])
-  x2[:n] = np.abs(t2[start:stop])
+  x1[:int(n)] = np.abs(t1[int(start):int(stop)])
+  x2[:int(n)] = np.abs(t2[int(start):int(stop)])
 
   x1_fft = np.fft.fft(x1, pow_of_2) / pow_of_2
   x2_fft = np.fft.fft(x2, pow_of_2)
@@ -346,10 +346,17 @@ def lpq_weight(start, stop, pow_syl, pow_time,
   result_time **= (1 / pow_time)
   return result_time
 
-def process_bad(frame_disturbance):
+def process_bad(ref_data, deg_data,
+                pitch_pow_dens_deg,
+                pitch_pow_dens_ref,
+                frame_disturbance, 
+                frame_disturbance_asym_add, 
+                tweaked_deg, window, d_pow_f, a_pow_f,
+                Nf, Nb, bufsamp, maxlen, padsamp, sr, max_scale, min_scale,
+                thres_bad = 30, max_bad_interval = 1000):
   stop_frame = frame_disturbance.shape[0] - 1
 
-  frame_bad = [(fd > threshold_bad_frame) for frame in frame_disturbance]
+  frame_bad = [(fd > thres_bad) for fd in frame_disturbance]
   frame_bad[0] = False
 
   smear_range = 2
@@ -363,6 +370,13 @@ def process_bad(frame_disturbance):
   minimum_bad_frame_in_interval = 5
   num_bad_interval = 0
   frame = 0
+
+  start_frame_bad_interval = np.zeros(max_bad_interval)
+  stop_frame_bad_interval = np.zeros(max_bad_interval)
+  start_samp_bad_interval = np.zeros(max_bad_interval)
+  stop_samp_bad_interval = np.zeros(max_bad_interval)
+  num_samp_bad_interval = np.zeros(max_bad_interval)
+  delay_samp_bad_interval = np.zeros(max_bad_interval)
 
   while frame <= stop_frame:
     while frame <= stop_frame and not smear_frame_bad[frame]:
@@ -391,17 +405,17 @@ def process_bad(frame_disturbance):
 
   for bad_interval in range(num_bad_interval):
     num_samp = num_samp_bad_interval[bad_interval]
-    ref = np.zeros(2 * search_range_samp + num_samp)
-    deg = np.zeros(2 * search_range_samp + num_samp)
+    ref = np.zeros(int(2 * search_range_samp + num_samp))
+    deg = np.zeros(int(2 * search_range_samp + num_samp))
 
     start_samp = start_samp_bad_interval[bad_interval]
-    ref[search_range_samp:][:num_samp] = ref_data[start_samp:][:num_samp]
+    ref[search_range_samp:][:int(num_samp)] = ref_data[int(start_samp):][:int(num_samp)]
 
     for i in range(deg.shape[0]):
       j = start_samp - search_range + i
       nn = maxlen - bufsamp + padsamp
       j = max(min(j, nn), bufsamp)
-      deg[i] = tweaked_deg[j]
+      deg[i] = tweaked_deg[int(j)]
 
     delay_samp, best_corr = compute_delay(0, 2 * search_range_samp + num_samp, search_range_samp, ref, deg)
     delay_samp_bad_interval[bad_interval] = delay_samp
@@ -413,25 +427,25 @@ def process_bad(frame_disturbance):
     for bad_interval in range(num_bad_interval):
       delay = delay_samp_bad_interval[bad_interval]
 
-      for i in range(start_samp_bad_interval[bad_interval], stop_samp_bad_interval[bad_interval]):
+      for i in range(int(start_samp_bad_interval[bad_interval]), int(stop_samp_bad_interval[bad_interval])):
         j = i + delay
         j = max(min(j, maxlen), 0)
-        doubly_tweaked_deg[i] = tweaked_deg[j]
+        doubly_tweaked_deg[i] = tweaked_deg[int(j)]
 
       untweaked_deg = deg_data
       deg_data = doubly_tweaked_deg
 
       for bad_interval in range(num_bad_interval):
-        for frame in range(start_frame_bad_interval[bad_interval], stop_frame_bad_interval[bad_interval]):
-          start_samp_ref = searchbuf * downsample + (frame * Nf / 2)
+        for frame in range(int(start_frame_bad_interval[bad_interval]), int(stop_frame_bad_interval[bad_interval])):
+          start_samp_ref = bufsamp + (frame * Nf / 2)
           start_samp_deg = start_samp_ref
           hz_deg = short_term_fft(Nf, deg_data, window, start_samp_deg)
-          pitch_pow_dens_deg[frame, :] = freq_warping(hz_deg, Nb, frame)
+          pitch_pow_dens_deg[frame, :] = freq_warping(hz_deg, Nb, frame, sr)
 
         old_scale = 1
-        for frame in range(start_frame_bad_interval[bad_interval], stop_frame_bad_interval[bad_interval]):
-          total_audible_pow_ref = total_audible(frame, pitch_pow_dens_ref, 1)
-          total_audible_pow_deg = total_audible(frame, pitch_pow_dens_deg, 1)
+        for frame in range(int(start_frame_bad_interval[bad_interval]), int(stop_frame_bad_interval[bad_interval])):
+          total_audible_pow_ref = total_audible(frame, pitch_pow_dens_ref, 1, sr)
+          total_audible_pow_deg = total_audible(frame, pitch_pow_dens_deg, 1, sr)
           scale = (total_audible_pow_ref + 5e3) / (total_audible_pow_deg + 5e3)
 
           if frame > 0:
@@ -440,8 +454,8 @@ def process_bad(frame_disturbance):
           scale = max(min(scale, max_scale), min_scale)
 
           pitch_pow_dens_deg[frame, :] *= scale
-          loudness_dens_ref = intensity_warping_of(frame, pitch_pow_dens_ref) 
-          loudness_dens_deg = intensity_warping_of(frame, pitch_pow_dens_deg)
+          loudness_dens_ref = intensity_warping_of(frame, pitch_pow_dens_ref, sr) 
+          loudness_dens_deg = intensity_warping_of(frame, pitch_pow_dens_deg, sr)
           disturbance_dens = loudness_dens_deg - loudness_dens_ref
 
           for band in range(Nb):
@@ -456,9 +470,9 @@ def process_bad(frame_disturbance):
               else:
                 disturbance_dens[band] = 0
 
-          frame_disturbance[frame] = min(frame_disturbance[frame], pseudo_lp(disturbance_dens, d_pow_f))
-          disturbance_dens = multiply_with_asymm_factor(disturbance_dens, frame, pitch_pow_dens_ref, pitch_pow_dens_deg)
-          frame_disturbance_asym_add[frame] = min(frame_disturbance_asym_add[frame], pseudo_lp(disturbance_dens, a_pow_f))
+          frame_disturbance[frame] = min(frame_disturbance[frame], pseudo_lp(disturbance_dens, d_pow_f, sr))
+          disturbance_dens = multiply_with_asymm_factor(disturbance_dens, frame, pitch_pow_dens_ref, pitch_pow_dens_deg, sr)
+          frame_disturbance_asym_add[frame] = min(frame_disturbance_asym_add[frame], pseudo_lp(disturbance_dens, a_pow_f, sr))
             
       deg_data = untweaked_deg   
 
@@ -619,12 +633,18 @@ def pesq_model(ref_data, reflen, deg_data, deglen, sr,
     tweaked_deg[i] = deg_data[int(j)]
 
   if bad_frame:
-    process_bad()
+    process_bad(ref_data, deg_data,
+                pitch_pow_dens_deg,
+                pitch_pow_dens_ref,
+                frame_disturbance, 
+                frame_disturbance_asym_add, 
+                tweaked_deg, window, d_pow_f, a_pow_f,
+                Nf, Nb, bufsamp, maxlen, padsamp, sr, max_scale, min_scale)
 
   for frame in range(stop_frame + 1):
     h = 1
     if (stop_frame + 1) > 1000:
-      n = math.floor((maxlen - 2 * searchbuf * downsample) / (Nf / 2)) - 1
+      n = math.floor((maxlen - 2 * bufsamp) / (Nf / 2)) - 1
       twf = min((n - 1000) / 5500, 0.5)
       h = (1. - twf) + twf * frame / n
 

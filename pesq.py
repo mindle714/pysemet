@@ -657,6 +657,6 @@ def split_align(ref_data, reflen, ref_vad, ref_logvad,
       utt_dc1[bp] > _utt_delayconf and utt_dc2[bp] > _utt_delayconf:
       best_ed1 = utt_ed1[bp]; best_d1 = utt_d1[bp]; best_dc1 = utt_dc1[bp]
       best_ed2 = utt_ed2[bp]; best_d2 = utt_d2[bp]; best_dc2 = utt_dc2[bp]
-      best_bp = utt_bp[bp]
+      best_bp = utt_bps[bp]
 
   return best_ed1, best_d1, best_dc1, best_ed2, best_d2, best_dc2, best_bp
