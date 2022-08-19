@@ -6,9 +6,6 @@ import align
 
 datapadding = 320
 
-def nextpow2(x):
-  return 1 if x == 0 else 2 ** math.ceil(math.log2(x))
-
 def short_term_fft(Nf, data, window, start):
   x1 = data[int(start) : int(start + Nf)] * window
   x1_fft = np.fft.fft(x1)
