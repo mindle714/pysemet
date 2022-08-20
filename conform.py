@@ -17,5 +17,5 @@ for tc in tcs:
   assert sr1 == sr2
 
   raw_mos, pesq_mos = pesq.pesq(data1, data2, sr=sr1)
-  print(raw_mos, pesq_mos)
+  print("{} {} {} {}".format(toks[2], toks[3], raw_mos, pesq_mos))
 

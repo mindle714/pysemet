@@ -1,17 +1,23 @@
 import math
 import numpy as np
 np.set_printoptions(suppress=True)
-from scipy import signal
+#from scipy import signal
+import dsp
 import align
 import pesq_model
 
 datapadding = 320
 
-def fix_power_level(data, datalen, maxlen, sr, searchbuf = 75):
+def get_param(sr, searchbuf = 75):
+  assert sr == 16000 or sr == 8000
   sr_mod = 'wb' if sr == 16000 else 'nb'
   downsample = 32 if sr_mod == 'nb' else 64
   bufsamp = searchbuf * downsample
   padsamp = datapadding * (sr // 1000)
+  return downsample, bufsamp, padsamp
+
+def fix_power_level(data, datalen, maxlen, sr, searchbuf = 75):
+  downsample, bufsamp, padsamp = get_param(sr)
 
   filter_db = np.array([
     [0, 50, 100, 125, 160, 200, 250, 300, 350, 400, 
@@ -29,10 +35,7 @@ def fix_power_level(data, datalen, maxlen, sr, searchbuf = 75):
   return data * scale
 
 def apply_filter(data, datalen, filter_db, sr, searchbuf = 75):
-  sr_mod = 'wb' if sr == 16000 else 'nb'
-  downsample = 32 if sr_mod == 'nb' else 64 
-  bufsamp = searchbuf * downsample
-  padsamp = datapadding * (sr // 1000)
+  downsample, bufsamp, padsamp = get_param(sr)
 
   n = datalen - 2 * bufsamp + padsamp
   pow_of_2 = 2 ** math.ceil(math.log2(n))
@@ -44,24 +47,21 @@ def apply_filter(data, datalen, filter_db, sr, searchbuf = 75):
   x_fft = np.fft.fft(x, pow_of_2)
 
   freq_resolution = sr / pow_of_2
-  factor_db = np.interp(np.arange(pow_of_2//2+1) * freq_resolution, 
-    filter_db[0], filter_db[1])
+  factor_db = np.interp(np.arange(pow_of_2//2+1) * freq_resolution, filter_db[0], filter_db[1])
   factor_db -= gainfilter
 
   factor = 10 ** (factor_db / 20)
   factor = np.concatenate([factor, factor[1:-1][::-1]], 0)
   x_fft = x_fft * factor
 
-  y = np.fft.ifft(x_fft, pow_of_2)
+  y = np.fft.ifft(x_fft, pow_of_2).real
   
   aligned = np.copy(data)
   aligned[bufsamp : bufsamp + n] = y[:n]
   return aligned
 
 def dc_block(data, datalen, sr, searchbuf = 75):
-  sr_mod = 'wb' if sr == 16000 else 'nb'
-  downsample = 32 if sr_mod == 'nb' else 64 
-  bufsamp = searchbuf * downsample
+  downsample, bufsamp, padsamp = get_param(sr)
 
   facc = np.sum(data[bufsamp : datalen - bufsamp]) / datalen
   mod_data = np.copy(data)
@@ -72,37 +72,38 @@ def dc_block(data, datalen, sr, searchbuf = 75):
 
   return mod_data
 
-def apply_filters(data, sr):
+def apply_filters(data, datalen, sr):
   sr_mod = 'wb' if sr == 16000 else 'nb'
   if sr_mod == 'nb':
     iir_sos = np.array([
-      [0.885535424, -0.885535424,  0.000000000, 1., -0.771070709,  0.000000000],
-      [0.895092588,  1.292907193,  0.449260174, 1.,  1.268869037,  0.442025372],
-      [4.049527940, -7.865190042,  3.815662102, 1., -1.746859852,  0.786305963],
-      [0.500002353, -0.500002353,  0.000000000, 1.,  0.000000000,  0.000000000],
-      [0.565002834, -0.241585934, -0.306009671, 1.,  0.259688659,  0.249979657],
-      [2.115237288,  0.919935084,  1.141240051, 1., -1.587313419,  0.665935315],
-      [0.912224584, -0.224397719, -0.641121413, 1., -0.246029464, -0.556720590],
-      [0.444617727, -0.307589321,  0.141638062, 1., -0.996391149,  0.502251622]])
+      [0.885535424, -0.885535424,  0.000000000, -0.771070709,  0.000000000],
+      [0.895092588,  1.292907193,  0.449260174,  1.268869037,  0.442025372],
+      [4.049527940, -7.865190042,  3.815662102, -1.746859852,  0.786305963],
+      [0.500002353, -0.500002353,  0.000000000,  0.000000000,  0.000000000],
+      [0.565002834, -0.241585934, -0.306009671,  0.259688659,  0.249979657],
+      [2.115237288,  0.919935084,  1.141240051, -1.587313419,  0.665935315],
+      [0.912224584, -0.224397719, -0.641121413, -0.246029464, -0.556720590],
+      [0.444617727, -0.307589321,  0.141638062, -0.996391149,  0.502251622]])
 
   else:
     iir_sos = np.array([
-      [0.325631521, -0.086782860, -0.238848661, 1., -1.079416490,  0.434583902],
-      [0.403961804, -0.556985881,  0.153024077, 1., -0.415115835,  0.696590244],
-      [4.736162769,  3.287251046,  1.753289019, 1., -1.859599046,  0.876284034],
-      [0.365373469,  0.000000000,  0.000000000, 1., -0.634626531,  0.000000000],
-      [0.884811506,  0.000000000,  0.000000000, 1., -0.256725271,  0.141536777],
-      [0.723593055, -1.447186099,  0.723593044, 1., -1.129587469,  0.657232737],
-      [1.644910855, -1.817280902,  1.249658063, 1., -1.778403899,  0.801724355],
-      [0.633692689, -0.284644314, -0.319789663, 1.,  0.000000000,  0.000000000],
-      [1.032763031,  0.268428979,  0.602913323, 1.,  0.000000000,  0.000000000],
-      [1.001616361, -0.823749013,  0.439731942, 1., -0.885778255,  0.000000000],
-      [0.752472096, -0.375388990,  0.188977609, 1., -0.077258216,  0.247230734],
-      [1.023700575,  0.001661628,  0.521284240, 1., -0.183867259,  0.354324187]])
+      [0.325631521, -0.086782860, -0.238848661, -1.079416490,  0.434583902],
+      [0.403961804, -0.556985881,  0.153024077, -0.415115835,  0.696590244],
+      [4.736162769,  3.287251046,  1.753289019, -1.859599046,  0.876284034],
+      [0.365373469,  0.000000000,  0.000000000, -0.634626531,  0.000000000],
+      [0.884811506,  0.000000000,  0.000000000, -0.256725271,  0.141536777],
+      [0.723593055, -1.447186099,  0.723593044, -1.129587469,  0.657232737],
+      [1.644910855, -1.817280902,  1.249658063, -1.778403899,  0.801724355],
+      [0.633692689, -0.284644314, -0.319789663,  0.000000000,  0.000000000],
+      [1.032763031,  0.268428979,  0.602913323,  0.000000000,  0.000000000],
+      [1.001616361, -0.823749013,  0.439731942, -0.885778255,  0.000000000],
+      [0.752472096, -0.375388990,  0.188977609, -0.077258216,  0.247230734],
+      [1.023700575,  0.001661628,  0.521284240, -0.183867259,  0.354324187]])
 
-  return signal.sosfilt(iir_sos, data)
+  #return signal.sosfilt(iir_sos, data)
+  return dsp.iirfilt(iir_sos.flatten(), iir_sos.shape[0], data, datalen)   
 
-def apply_filters_WB(data, sr):
+def apply_filters_WB(data, datalen, sr):
   sr_mod = 'wb' if sr == 16000 else 'nb'
   if sr_mod == 'nb':
     iir_sos = np.array([
@@ -112,22 +113,23 @@ def apply_filters_WB(data, sr):
     iir_sos = np.array([
       2.740826, -5.4816519, 2.740826, -1.9444777, 0.94597794])
 
-  return signal.sosfilt(iir_sos, data)
+  #return signal.sosfilt(iir_sos, data)
+  return dsp.iirfilt(iir_sos.flatten(), iir_sos.shape[0], data, datalen)   
 
 def input_filter(ref_data, reflen, deg_data, deglen, sr):
   mod_ref_data = dc_block(ref_data, reflen, sr)
   mod_deg_data = dc_block(deg_data, deglen, sr)
 
-  mod_ref_data = apply_filters(mod_ref_data, sr)
-  mod_deg_data = apply_filters(mod_deg_data, sr)
+  mod_ref_data = apply_filters(mod_ref_data, reflen, sr)
+  mod_deg_data = apply_filters(mod_deg_data, deglen, sr)
 
   return mod_ref_data, mod_deg_data
 
 def id_searchwindows(ref_vad, vadlen, deglen, 
                      delayest, minutter = 50, searchbuf = 75):
   speech_flag = 0
-  utt_starts = np.zeros(50)
-  utt_ends = np.zeros(50)
+  utt_starts = np.zeros(50, dtype='int')
+  utt_ends = np.zeros(50, dtype='int')
 
   del_deg_start = minutter - delayest
   del_deg_end = deglen - minutter
@@ -148,22 +150,19 @@ def id_searchwindows(ref_vad, vadlen, deglen,
       if (count - this_start) >= minutter and this_start < del_deg_end and count > del_deg_start:
         utt_num += 1
 
-  return utt_starts[:utt_num], utt_ends[:utt_num]
+  return utt_num, utt_starts, utt_ends
 
 def id_utterances(utt_delay, ref_vad, reflen, deglen, 
                   delayest, sr, minutter = 50, searchbuf = 75):
-  sr_mod = 'wb' if sr == 16000 else 'nb'
-  downsample = 32 if sr_mod == 'nb' else 64
-  bufsamp = searchbuf * downsample
+  downsample, bufsamp, padsamp = get_param(sr)
 
   reflen = math.floor(reflen / downsample)
 
-  utt_starts, utt_ends = id_searchwindows(ref_vad, reflen, 
+  nutter, utt_starts, utt_ends = id_searchwindows(ref_vad, reflen, 
     math.floor((deglen - delayest) / downsample), 
     math.floor(delayest / downsample), minutter = minutter, searchbuf = 0)
 
   utt_starts[0] = searchbuf
-  nutter = utt_starts.shape[0]
   utt_ends[nutter - 1] = reflen - searchbuf
 
   for utt_num in range(1, nutter):
@@ -196,19 +195,19 @@ def id_utterances(utt_delay, ref_vad, reflen, deglen,
   return utt_starts, utt_ends
 
 def utterance_locate(ref_data, reflen, ref_vad, ref_logvad,
-                     deg_data, deglen, deg_vad, deg_logvad, delayest, sr):
+                     deg_data, deglen, deg_vad, deg_logvad, delayest, sr,
+                     searchbuf = 75):
   sr_mod = 'wb' if sr == 16000 else 'nb'
   downsample = 32 if sr_mod == 'nb' else 64 
   align_nfft = 512 if sr_mod == 'nb' else 1024
   window = 0.5 * (1 - np.cos((2 * np.pi * np.arange(align_nfft)) / align_nfft))
 
-  uttsearch_starts, uttsearch_ends = id_searchwindows(
+  nutter, uttsearch_starts, uttsearch_ends = id_searchwindows(
     ref_vad, math.floor(reflen / downsample), 
     math.floor((deglen - delayest) / downsample), math.floor(delayest / downsample))
-  nutter = uttsearch_starts.shape[0]
 
-  utt_delayest = np.zeros(50)
-  utt_delay = np.zeros(50)
+  utt_delayest = np.zeros(50, dtype='int')
+  utt_delay = np.zeros(50, dtype='int')
   utt_delayconf = np.zeros(50)
 
   for utt_id in range(nutter):
@@ -219,8 +218,8 @@ def utterance_locate(ref_data, reflen, ref_vad, ref_logvad,
 
     _utt_delay, _utt_delayconf = align.time_align(
       ref_data, deg_data, deglen,
-      int(uttsearch_starts[utt_id] * downsample),
-      int(uttsearch_ends[utt_id] * downsample),
+      uttsearch_starts[utt_id] * downsample,
+      uttsearch_ends[utt_id] * downsample,
       utt_delayest[utt_id], window)
     utt_delay[utt_id] = _utt_delay
     utt_delayconf[utt_id] = _utt_delayconf
@@ -235,11 +234,11 @@ def utterance_locate(ref_data, reflen, ref_vad, ref_logvad,
 
     # adjust utterance start, end based on VAD
     utt_speechstart = max(0, _utt_start)
-    while utt_speechstart < (_utt_end-1) and ref_vad[int(utt_speechstart)] <= 0:
+    while utt_speechstart < (_utt_end-1) and ref_vad[utt_speechstart] <= 0:
       utt_speechstart += 1
 
     utt_speechend = _utt_end
-    while utt_speechend > _utt_start and ref_vad[int(utt_speechend)] <= 0:
+    while utt_speechend > _utt_start and ref_vad[utt_speechend] <= 0:
       utt_speechend -= 1
     utt_speechend += 1
     uttlen = utt_speechend - utt_speechstart
@@ -249,7 +248,8 @@ def utterance_locate(ref_data, reflen, ref_vad, ref_logvad,
       best_ed1, best_d1, best_dc1, best_ed2, best_d2, best_dc2, best_bp = split_align(
         ref_data, reflen, ref_vad, ref_logvad, 
         deg_data, deglen, deg_vad, deg_logvad,
-        _utt_start, utt_speechstart, utt_speechend, _utt_end, 
+        _utt_start, utt_speechstart, utt_speechend, _utt_end,
+        utt_delay,
         utt_delayest[utt_id], _utt_delayconf, sr)
 
       if best_dc1 > _utt_delayconf and best_dc2 > _utt_delayconf:
@@ -409,14 +409,7 @@ def apply_vad(data, datalen, sr,
   return vad, log_vad
 
 def pesq(ref_data, deg_data, sr, searchbuf = 75):
-  assert sr == 16000 or sr == 8000
-  sr_mod = 'wb' if sr == 16000 else 'nb'
-  downsample = 32 if sr_mod == 'nb' else 64
-  bufsamp = searchbuf * downsample
-  padsamp = datapadding * (sr // 1000)
-  
-  winlength = 512 if sr_mod == 'nb' else 1024
-  window = 0.5 * (1 - np.cos(2 * np.pi * np.arange(winlength)/winlength))
+  downsample, bufsamp, padsamp = get_param(sr)
   
   reflen = ref_data.shape[0] + 2 * bufsamp
   deglen = deg_data.shape[0] + 2 * bufsamp
@@ -431,7 +424,7 @@ def pesq(ref_data, deg_data, sr, searchbuf = 75):
   ref_data = fix_power_level(ref_data, reflen, maxlen, sr)
   deg_data = fix_power_level(deg_data, deglen, maxlen, sr)
 
-  if sr_mod == 'nb':
+  if sr == 8000:
     IRS_filter_db = np.array([
       [0, 50, 100, 125, 160, 200, 250, 300, 350, 400, 
       500, 600, 700, 800, 1000, 1300, 1600, 2000, 2500, 3000, 
@@ -444,8 +437,8 @@ def pesq(ref_data, deg_data, sr, searchbuf = 75):
     deg_data = apply_filter(deg_data, deglen, IRS_filter_db, sr)
 
   else:
-    ref_data = apply_filters_WB(ref_data)
-    deg_data = apply_filters_WB(deg_data)
+    ref_data = apply_filters_WB(ref_data, reflen, sr)
+    deg_data = apply_filters_WB(deg_data, deglen, sr)
 
   model_ref = ref_data
   model_deg = deg_data
@@ -466,10 +459,20 @@ def pesq(ref_data, deg_data, sr, searchbuf = 75):
   ref_data = model_ref
   deg_data = model_deg
 
+  if reflen < deglen:
+    ref_data_pad = np.zeros(deglen + padsamp)
+    ref_data_pad[:ref_data.shape[0]] = ref_data
+    ref_data = ref_data_pad
+
+  elif reflen > deglen: 
+    deg_data_pad = np.zeros(reflen + padsamp)
+    deg_data_pad[:deg_data.shape[0]] = deg_data
+    deg_data = deg_data_pad
+
   pesq_mos = pesq_model.pesq_model(ref_data, reflen, deg_data, deglen, sr,
     utt_starts, utt_ends, utt_delay, nutter)
 
-  if sr_mod == 'nb':
+  if sr == 8000:
     mapped = 0.999 + 4. / (1. + np.exp(-1.4945 * pesq_mos + 4.6607))
     return pesq_mos, mapped
 
@@ -479,7 +482,8 @@ def pesq(ref_data, deg_data, sr, searchbuf = 75):
 
 def split_align(ref_data, reflen, ref_vad, ref_logvad,
                 deg_data, deglen, deg_vad, deg_logvad,
-                _utt_start, utt_speechstart, utt_speechend, _utt_end, 
+                _utt_start, utt_speechstart, utt_speechend, _utt_end,
+                utt_delay,
                 utt_delayest_1, _utt_delayconf, sr, searchbuf = 75):
   sr_mod = 'wb' if sr == 16000 else 'nb'
   downsample = 32 if sr_mod == 'nb' else 64
@@ -487,7 +491,7 @@ def split_align(ref_data, reflen, ref_vad, ref_logvad,
   window = 0.5 * (1 - np.cos((2 * np.pi * np.arange(align_nfft)) / align_nfft))
 
   uttlen = utt_speechend - utt_speechstart
-  kernel = align_nfft / 64
+  kernel = align_nfft // 64
   delta = align_nfft / (4 * downsample)
   step = math.floor((0.801 * uttlen + 40 * delta - 1) / (40 * delta))
   step *= delta
@@ -495,7 +499,7 @@ def split_align(ref_data, reflen, ref_vad, ref_logvad,
   pad = math.floor(uttlen / 10)
   pad = max(pad, searchbuf)
 
-  utt_bps = np.zeros(41)
+  utt_bps = np.zeros(41, dtype='int')
   utt_bps[0] = utt_speechstart + pad
   n_bps = 0
 
@@ -506,19 +510,21 @@ def split_align(ref_data, reflen, ref_vad, ref_logvad,
 
   if n_bps <= 0: return
 
-  utt_ed1 = np.zeros(41)
-  utt_ed2 = np.zeros(41)
+  utt_ed1 = np.zeros(41, dtype='int')
+  utt_ed2 = np.zeros(41, dtype='int')
 
   for bp in range(n_bps):
     utt_ed1[bp] = align.frame_align(
       ref_logvad, _utt_start, utt_bps[bp], 
       deg_logvad, math.floor(deglen / downsample),
       math.floor(utt_delayest_1 / downsample)) * downsample + utt_delayest_1
+    utt_delay[-1] = utt_ed1[bp]
 
     utt_ed2[bp] = align.frame_align(
       ref_logvad, utt_bps[bp], _utt_end, 
       deg_logvad, math.floor(deglen / downsample),
       math.floor(utt_delayest_1 / downsample)) * downsample + utt_delayest_1
+    utt_delay[-1] = utt_ed2[bp]
 
   utt_dc1 = np.zeros(41) 
   utt_dc1[:n_bps] = -2.
@@ -526,8 +532,8 @@ def split_align(ref_data, reflen, ref_vad, ref_logvad,
   def _inner(startr, startd, h, hsum, utt_d1, utt_dc1):
     while (startd + align_nfft) <= deglen and \
       (startr + align_nfft) <= (utt_bps[bp] * downsample):
-      x1 = ref_data[int(startr) : int(startr + align_nfft)] * window
-      x2 = deg_data[int(startd) : int(startd + align_nfft)] * window
+      x1 = ref_data[startr : startr + align_nfft] * window
+      x2 = deg_data[startd : startd + align_nfft] * window
 
       x1, v_max = align.xcorr(x1, x2, align_nfft)
       n_max = (v_max ** 0.125) / kernel
@@ -535,11 +541,11 @@ def split_align(ref_data, reflen, ref_vad, ref_logvad,
       for count in range(align_nfft):
         if x1[count] > v_max:
           hsum += n_max * kernel
-          for k in range(int(1 - kernel), int(kernel)):
+          for k in range(1 - kernel, kernel):
             h[(count + k + align_nfft) % align_nfft] += n_max * (kernel - np.abs(k))
 
-      startr += align_nfft / 4
-      startd += align_nfft / 4
+      startr += align_nfft // 4
+      startd += align_nfft // 4
 
     i_max = np.argmax(h)
     v_max = h[i_max]
@@ -556,8 +562,8 @@ def split_align(ref_data, reflen, ref_vad, ref_logvad,
 
   def _inner2(startr, startd, h, hsum, utt_d2, utt_dc2):
     while startd >= 0 and startr >= utt_bps[bp] * downsample:
-      x1 = ref_data[int(startr) : int(startr + align_nfft)] * window
-      x2 = deg_data[int(startd) : int(startd + align_nfft)] * window
+      x1 = ref_data[startr : startr + align_nfft] * window
+      x2 = deg_data[startd : startd + align_nfft] * window
       
       x1, v_max = align.xcorr(x1, x2, align_nfft)
       n_max = (v_max ** 0.125) / kernel
@@ -565,11 +571,11 @@ def split_align(ref_data, reflen, ref_vad, ref_logvad,
       for count in range(align_nfft):
         if x1[count] > v_max:
           hsum += n_max * kernel
-          for k in range(int(1 - kernel), int(kernel)):
+          for k in range(1 - kernel, kernel):
             h[(count + k + align_nfft) % align_nfft] += n_max * (kernel - np.abs(k))
       
-      startr -= align_nfft / 4
-      startd -= align_nfft / 4
+      startr -= align_nfft // 4
+      startd -= align_nfft // 4
     
     i_max = np.argmax(h)
     v_max = h[i_max]

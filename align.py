@@ -8,7 +8,7 @@ def xcorr(x1, x2, nfft):
   x1_fft = np.fft.fft(x1, nfft)
   x1_fft_conj = np.conjugate(x1_fft)
   x2_fft = np.fft.fft(x2, nfft)
-  x1 = np.fft.ifft(x1_fft_conj * x2_fft, nfft)
+  x1 = np.fft.ifft(x1_fft_conj * x2_fft, nfft).real
 
   x1 = np.abs(x1)
   v_max = np.max(x1) * 0.99
@@ -26,18 +26,18 @@ def fftnxcorr(xf1, startr, nr, xf2, startd, nd):
 
   x1_fft = np.fft.fft(x1, 2*nx)
   x2_fft = np.fft.fft(x2, 2*nx)
-  tmp = np.fft.ifft(x1_fft * x2_fft, 2*nx)
+  tmp = np.fft.ifft(x1_fft * x2_fft, 2*nx).real
   
   return tmp[:nr+nd-1]
 
 def _frame_align(rfdata, dfdata, nr, nd, startr, startd):
-  startr = max(0, int(startr))
-  startd = max(0, int(startd))
+  startr = max(0, startr)
+  startd = max(0, startd)
 
   max_y = 0.
   i_max_y = nr - 1
   if nr > 1 and nd > 1:
-    y = fftnxcorr(rfdata, startr, int(nr), dfdata, startd, int(nd))
+    y = fftnxcorr(rfdata, startr, nr, dfdata, startd, nd)
     i_max_y = np.argmax(y)
     max_y = y[i_max_y]
     if max_y <= 0:
@@ -64,9 +64,9 @@ def frame_align(rfdata, startr, endr, dfdata, nd, delayest):
 
 def time_align(rdata, ddata, deglen,
                startr, endr, estdelay, window):
-  startd = int(startr + estdelay)
+  startd = startr + estdelay
   if startd < 0:
-    startr = int(-estdelay)
+    startr = -estdelay
     startd = 0
 
   winlen = window.shape[0]
@@ -95,16 +95,16 @@ def time_align(rdata, ddata, deglen,
 
   x1_fft = np.fft.fft(x1, winlen)
   x2_fft = np.fft.fft(x2, winlen)
-  x1 = np.fft.ifft(x1_fft * x2_fft, winlen)
+  x1 = np.fft.ifft(x1_fft * x2_fft, winlen).real
 
   if hsum > 0:
     h = np.abs(x1) / hsum
   else:
-    h = 0
+    h = np.zeros_like(x1)
 
   i_max = np.argmax(h)
   v_max = h[i_max]
-  if i_max >= (winlen / 2):
-    i_max = i_max - winlen
+  if i_max >= (winlen // 2):
+    i_max -= winlen
 
   return estdelay + i_max, v_max
