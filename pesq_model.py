@@ -142,7 +142,7 @@ def time_sum_audible_of(silent, pitch_pow_dens, sr):
   avg_pitch_pow_dens = np.zeros(Nb)
   for band in range(Nb):
     result = 0
-    for frame in range(silent.shape[0]):
+    for frame in range(len(silent)):
       if not silent[frame]:
         h = pitch_pow_dens[frame, band]
         if h > (100 * abs_thresh_pow[band]):
@@ -430,12 +430,9 @@ def process_bad(ref_data, deg_data,
         j = i + delay
         j = max(min(j, maxlen - 1), 0)
         doubly_tweaked_deg[i] = tweaked_deg[j]
-        #if i == 13900:
-        #  print(">>{} {}".format(doubly_tweaked_deg[13900], j))
 
     untweaked_deg = deg_data
     deg_data = doubly_tweaked_deg
-    #print(">>>>{}".format(doubly_tweaked_deg[13900]))
 
     for bad_interval in range(num_bad_interval):
       for frame in range(start_frame_bad_interval[bad_interval], stop_frame_bad_interval[bad_interval]):
@@ -443,8 +440,6 @@ def process_bad(ref_data, deg_data,
         start_samp_deg = start_samp_ref
         hz_deg = short_term_fft(Nf, deg_data, window, start_samp_deg)
         pitch_pow_dens_deg[frame, :] = freq_warping(hz_deg, Nb, frame, sr)
-        #if frame == 84:
-        #  print(frame, start_samp_deg, np.sum(hz_deg), np.sum(deg_data))
 
       old_scale = 1
       for frame in range(start_frame_bad_interval[bad_interval], stop_frame_bad_interval[bad_interval]):
@@ -475,7 +470,6 @@ def process_bad(ref_data, deg_data,
               disturbance_dens[band] = 0
 
         frame_disturbance[frame] = min(frame_disturbance[frame], pseudo_lp(disturbance_dens, d_pow_f, sr))
-        #print(frame_disturbance[frame], frame, np.sum(disturbance_dens), np.sum(pitch_pow_dens_ref), np.sum(pitch_pow_dens_deg), scale)
         disturbance_dens = multiply_with_asymm_factor(disturbance_dens, frame, pitch_pow_dens_ref, pitch_pow_dens_deg, sr)
         frame_disturbance_asym_add[frame] = min(frame_disturbance_asym_add[frame], pseudo_lp(disturbance_dens, a_pow_f, sr))
             
@@ -518,7 +512,7 @@ def pesq_model(ref_data, reflen, deg_data, deglen, sr,
   pitch_pow_dens_ref = np.zeros((stop_frame + 1, Nb))
   pitch_pow_dens_deg = np.zeros((stop_frame + 1, Nb))
 
-  silent = np.zeros(stop_frame + 1)
+  silent = [False for _ in range(stop_frame + 1)]#np.zeros(stop_frame + 1)
   hz_ref = np.zeros(stop_frame + 1)
   hz_deg = np.zeros(stop_frame + 1)
 
@@ -544,6 +538,7 @@ def pesq_model(ref_data, reflen, deg_data, deglen, sr,
     total_audible_pow_ref = total_audible(frame, pitch_pow_dens_ref, 1e2, sr)
     total_audible_pow_deg = total_audible(frame, pitch_pow_dens_deg, 1e2, sr)
     silent[frame] = total_audible_pow_ref < 1e7
+
 
   denom = math.floor((maxlen - 2 * bufsamp + padsamp) / (Nf // 2)) - 1
   avg_pitch_pow_dens_ref = time_sum_audible_of(silent, pitch_pow_dens_ref, sr) / denom
@@ -639,8 +634,6 @@ def pesq_model(ref_data, reflen, deg_data, deglen, sr,
     j = max(j, bufsamp)
     j = min(j, nn - bufsamp - 1)
     tweaked_deg[i] = deg_data[j]
-    #if i == 13853:
-    #  print("!!! {} {}".format(tweaked_deg[i], j))
 
   if bad_frame:
     frame_disturbance, frame_disturbance_asym_add = process_bad(ref_data, deg_data,

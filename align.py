@@ -12,6 +12,9 @@ def xcorr(x1, x2, nfft):
 
   x1 = np.abs(x1)
   v_max = np.max(x1) * 0.99
+  # integrity with c source
+  #v_max = max(v_max, 0.)
+  #v_max = np.max(np.abs(x1)) * 0.99
   return x1, v_max
 
 def fftnxcorr(xf1, startr, nr, xf2, startd, nd):

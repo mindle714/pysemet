@@ -228,13 +228,21 @@ def utterance_locate(ref_data, reflen, ref_vad, ref_logvad,
  
   # utterance split
   utt_id = 0
-  while utt_id < nutter and nutter <= 50:
+  best_dc1 = 0.
+  best_dc2 = 0.
+  best_ed1 = 0
+  best_ed2 = 0
+  best_d1 = 0
+  best_d2 = 0
+  best_bp = 0
+              
+  while utt_id < nutter and nutter < 50:
     _utt_start = utt_starts[utt_id]
     _utt_end = utt_ends[utt_id]
 
     # adjust utterance start, end based on VAD
     utt_speechstart = max(0, _utt_start)
-    while utt_speechstart < (_utt_end-1) and ref_vad[utt_speechstart] <= 0:
+    while utt_speechstart < _utt_end and ref_vad[utt_speechstart] <= 0:
       utt_speechstart += 1
 
     utt_speechend = _utt_end
@@ -243,6 +251,7 @@ def utterance_locate(ref_data, reflen, ref_vad, ref_logvad,
     utt_speechend += 1
     uttlen = utt_speechend - utt_speechstart
 
+    #print(uttlen)
     if uttlen >= 200:
       _utt_delayconf = utt_delayconf[utt_id]
       best_ed1, best_d1, best_dc1, best_ed2, best_d2, best_dc2, best_bp = split_align(
@@ -250,8 +259,11 @@ def utterance_locate(ref_data, reflen, ref_vad, ref_logvad,
         deg_data, deglen, deg_vad, deg_logvad,
         _utt_start, utt_speechstart, utt_speechend, _utt_end,
         utt_delay,
-        utt_delayest[utt_id], _utt_delayconf, sr)
+        utt_delayest[utt_id], _utt_delayconf, sr,
+        [best_ed1, best_d1, best_dc1, best_ed2, best_d2, best_dc2, best_bp])
 
+      #print(_utt_start, utt_speechstart, utt_speechend, _utt_end, utt_delay, utt_delayest[utt_id], _utt_delayconf)
+      #print(best_dc1, best_dc2, _utt_delayconf)
       if best_dc1 > _utt_delayconf and best_dc2 > _utt_delayconf:
         for step in range(nutter - 1, utt_id, -1):
           utt_delayest[step + 1] = utt_delayest[step]
@@ -282,7 +294,7 @@ def utterance_locate(ref_data, reflen, ref_vad, ref_logvad,
           utt_ends[utt_id + 1] = _utt_end
 
         if ((utt_starts[utt_id] - searchbuf) * downsample + best_d1) < 0:
-          utt_starts[utt_id] = searchbuf + math.floor((downsample - best_d1) / downsample)
+          utt_starts[utt_id] = searchbuf + math.floor((downsample - 1 - best_d1) / downsample)
 
         if (utt_ends[utt_id + 1] * downsample + best_d2) > (deglen - searchbuf * downsample):
           utt_ends[utt_id + 1] = math.floor((deglen - best_d2) / downsample) - searchbuf
@@ -408,6 +420,212 @@ def apply_vad(data, datalen, sr,
 
   return vad, log_vad
 
+def split_align(ref_data, reflen, ref_vad, ref_logvad,
+                deg_data, deglen, deg_vad, deg_logvad,
+                _utt_start, utt_speechstart, utt_speechend, _utt_end,
+                utt_delay,
+                utt_delayest_1, _utt_delayconf, sr, prevs, searchbuf = 75):
+  # for integrity with c sources
+  best_ed1, best_d1, best_dc1, best_ed2, best_d2, best_dc2, best_bp = prevs
+  best_dc1 = 0; best_dc2 = 0;
+
+  sr_mod = 'wb' if sr == 16000 else 'nb'
+  downsample = 32 if sr_mod == 'nb' else 64
+  align_nfft = 512 if sr_mod == 'nb' else 1024
+  window = 0.5 * (1 - np.cos((2 * np.pi * np.arange(align_nfft)) / align_nfft))
+
+  uttlen = utt_speechend - utt_speechstart
+  kernel = align_nfft // 64
+  delta = align_nfft / (4 * downsample)
+  step = math.floor((0.801 * uttlen + 40 * delta - 1) / (40 * delta))
+  step *= delta
+
+  pad = math.floor(uttlen / 10)
+  pad = max(pad, searchbuf)
+
+  utt_bps = np.zeros(41, dtype='int')
+  utt_bps[0] = utt_speechstart + pad
+  n_bps = 0
+
+  while True:
+    n_bps += 1
+    utt_bps[n_bps] = utt_bps[n_bps - 1] + step
+    if not (utt_bps[n_bps] <= (utt_speechend - pad) and n_bps < 40): break
+
+  if n_bps <= 0: return
+
+  utt_ed1 = np.zeros(41, dtype='int')
+  utt_ed2 = np.zeros(41, dtype='int')
+
+  for bp in range(n_bps):
+    utt_ed1[bp] = align.frame_align(
+      ref_logvad, _utt_start, utt_bps[bp], 
+      deg_logvad, math.floor(deglen / downsample),
+      math.floor(utt_delayest_1 / downsample)) * downsample + utt_delayest_1
+    utt_delay[-1] = utt_ed1[bp]
+
+    utt_ed2[bp] = align.frame_align(
+      ref_logvad, utt_bps[bp], _utt_end, 
+      deg_logvad, math.floor(deglen / downsample),
+      math.floor(utt_delayest_1 / downsample)) * downsample + utt_delayest_1
+    utt_delay[-1] = utt_ed2[bp]
+    #print("utt_delay[{}][{}]".format(utt_ed1[bp], utt_ed2[bp]))
+
+  utt_dc1 = np.zeros(41) 
+  utt_dc1[:n_bps] = -2.
+
+  def _inner(bp, estdelay, startr, startd, h, hsum, utt_d1, utt_dc1):
+    while (startd + align_nfft) <= deglen and \
+      (startr + align_nfft) <= (utt_bps[bp] * downsample):
+      x1 = ref_data[startr : startr + align_nfft] * window
+      x2 = deg_data[startd : startd + align_nfft] * window
+
+      x1, v_max = align.xcorr(x1, x2, align_nfft)
+      n_max = (v_max ** 0.125) / kernel
+
+      for count in range(align_nfft):
+        if x1[count] > v_max:
+          hsum += n_max * kernel
+          for k in range(1 - kernel, kernel):
+            h[(count + k + align_nfft) % align_nfft] += n_max * (kernel - np.abs(k))
+
+      startr += align_nfft // 4
+      startd += align_nfft // 4
+
+    i_max = np.argmax(h)
+    v_max = h[i_max]
+
+    # for integrity with c sources
+    if v_max <= 0.:
+      i_max = 0; v_max = 0.
+
+    if i_max >= (align_nfft // 2):
+      i_max -= align_nfft
+
+    utt_d1[bp] = estdelay + i_max
+    if hsum > 0.:
+      utt_dc1[bp] = v_max / hsum
+    else:
+      utt_dc1[bp] = 0.
+
+    return startr, startd, h, hsum, utt_d1, utt_dc1
+
+  def _inner2(bp, estdelay, startr, startd, h, hsum, utt_d2, utt_dc2):
+    while startd >= 0 and startr >= utt_bps[bp] * downsample:
+      x1 = ref_data[startr : startr + align_nfft] * window
+      x2 = deg_data[startd : startd + align_nfft] * window
+      
+      x1, v_max = align.xcorr(x1, x2, align_nfft)
+      n_max = (v_max ** 0.125) / kernel
+      
+      for count in range(align_nfft):
+        if x1[count] > v_max:
+          hsum += n_max * kernel
+          for k in range(1 - kernel, kernel):
+            h[(count + k + align_nfft) % align_nfft] += n_max * (kernel - np.abs(k))
+      
+      startr -= align_nfft // 4
+      startd -= align_nfft // 4
+    
+    i_max = np.argmax(h)
+    v_max = h[i_max]
+
+    # for integrity with c sources
+    if v_max <= 0.:
+      i_max = 0; v_max = 0.
+
+    if i_max >= (align_nfft // 2):
+      i_max -= align_nfft
+    
+    utt_d2[bp] = estdelay + i_max
+    if hsum > 0.:
+      utt_dc2[bp] = v_max / hsum
+    else:
+      utt_dc2[bp] = 0.
+    
+    return startr, startd, h, hsum, utt_d2, utt_dc2
+
+  utt_d1 = np.zeros(41, dtype='int')
+  utt_d2 = np.zeros(41, dtype='int')
+
+  # forward
+  while True:
+    bp = 0
+    while bp < n_bps and utt_dc1[bp] > -2.: bp += 1
+    if bp >= n_bps: break
+
+    estdelay = utt_ed1[bp]
+    h = np.zeros(align_nfft)
+    hsum = 0.
+
+    startr = _utt_start * downsample
+    startd = startr + estdelay
+
+    if startd < 0:
+      startr = -estdelay
+      startd = 0
+
+    startr = max(startr, 0)
+    startd = max(startd, 0)
+
+    startr, startd, h, hsum, utt_d1, utt_dc1 = _inner(bp, estdelay, startr, startd, h, hsum, utt_d1, utt_dc1)
+    while bp < (n_bps - 1):
+      bp += 1
+      if utt_ed1[bp] == estdelay and utt_dc1[bp] <= -2.:
+        startr, startd, h, hsum, utt_d1, utt_dc1 = _inner(bp, estdelay, startr, startd, h, hsum, utt_d1, utt_dc1)
+ 
+  utt_dc2 = np.zeros(41)
+  for bp in range(n_bps):
+    if utt_dc1[bp] > _utt_delayconf:
+      utt_dc2[bp] = -2.
+    else:
+      utt_dc2[bp] = 0.
+
+  # backward
+  while True:
+    bp = n_bps - 1
+    while bp >= 0 and utt_dc2[bp] > -2.: bp -= 1
+    if bp < 0: break
+
+    estdelay = utt_ed2[bp]
+    h = np.zeros(align_nfft)
+    hsum = 0.
+
+    startr = _utt_end * downsample - align_nfft
+    startd = startr + estdelay
+
+    if (startd + align_nfft) > deglen:
+      startd = deglen - align_nfft
+      startr = startd - estdelay
+
+    startr, startd, h, hsum, utt_d2, utt_dc2 = _inner2(bp, estdelay, startr, startd, h, hsum, utt_d2, utt_dc2)
+    while bp > 0:
+      bp -= 1
+      if utt_ed2[bp] == estdelay and utt_dc2[bp] <= -2.:
+        startr, startd, h, hsum, utt_d2, utt_dc2 = _inner2(bp, estdelay, startr, startd, h, hsum, utt_d2, utt_dc2)
+
+  '''
+  best_dc1 = 0.
+  best_dc2 = 0.
+  best_ed1 = 0
+  best_ed2 = 0
+  best_d1 = 0
+  best_d2 = 0
+  best_bp = 0
+  '''
+
+  for bp in range(n_bps):
+    if np.abs(utt_d2[bp] - utt_d1[bp]) >= downsample and \
+      (utt_dc1[bp] + utt_dc2[bp]) > (best_dc1 + best_dc2) and \
+      utt_dc1[bp] > _utt_delayconf and utt_dc2[bp] > _utt_delayconf:
+      best_ed1 = utt_ed1[bp]; best_d1 = utt_d1[bp]; best_dc1 = utt_dc1[bp]
+      best_ed2 = utt_ed2[bp]; best_d2 = utt_d2[bp]; best_dc2 = utt_dc2[bp]
+      best_bp = utt_bps[bp]
+      #print("bp {}".format(bp))
+
+  #print("sub_align {} {} {} {} {} {}".format(best_ed1, best_d1, best_dc1, best_ed2, best_d2, best_dc2))
+  return best_ed1, best_d1, best_dc1, best_ed2, best_d2, best_dc2, best_bp
+
 def pesq(ref_data, deg_data, sr, searchbuf = 75):
   downsample, bufsamp, padsamp = get_param(sr)
   
@@ -479,190 +697,3 @@ def pesq(ref_data, deg_data, sr, searchbuf = 75):
   else:
     mapped = 0.999 + 4. / (1. + np.exp(-1.3669 * pesq_mos + 3.8224))
     return mapped
-
-def split_align(ref_data, reflen, ref_vad, ref_logvad,
-                deg_data, deglen, deg_vad, deg_logvad,
-                _utt_start, utt_speechstart, utt_speechend, _utt_end,
-                utt_delay,
-                utt_delayest_1, _utt_delayconf, sr, searchbuf = 75):
-  sr_mod = 'wb' if sr == 16000 else 'nb'
-  downsample = 32 if sr_mod == 'nb' else 64
-  align_nfft = 512 if sr_mod == 'nb' else 1024
-  window = 0.5 * (1 - np.cos((2 * np.pi * np.arange(align_nfft)) / align_nfft))
-
-  uttlen = utt_speechend - utt_speechstart
-  kernel = align_nfft // 64
-  delta = align_nfft / (4 * downsample)
-  step = math.floor((0.801 * uttlen + 40 * delta - 1) / (40 * delta))
-  step *= delta
-
-  pad = math.floor(uttlen / 10)
-  pad = max(pad, searchbuf)
-
-  utt_bps = np.zeros(41, dtype='int')
-  utt_bps[0] = utt_speechstart + pad
-  n_bps = 0
-
-  while True:
-    n_bps += 1
-    utt_bps[n_bps] = utt_bps[n_bps - 1] + step
-    if not (utt_bps[n_bps] <= (utt_speechend - pad) and n_bps < 40): break
-
-  if n_bps <= 0: return
-
-  utt_ed1 = np.zeros(41, dtype='int')
-  utt_ed2 = np.zeros(41, dtype='int')
-
-  for bp in range(n_bps):
-    utt_ed1[bp] = align.frame_align(
-      ref_logvad, _utt_start, utt_bps[bp], 
-      deg_logvad, math.floor(deglen / downsample),
-      math.floor(utt_delayest_1 / downsample)) * downsample + utt_delayest_1
-    utt_delay[-1] = utt_ed1[bp]
-
-    utt_ed2[bp] = align.frame_align(
-      ref_logvad, utt_bps[bp], _utt_end, 
-      deg_logvad, math.floor(deglen / downsample),
-      math.floor(utt_delayest_1 / downsample)) * downsample + utt_delayest_1
-    utt_delay[-1] = utt_ed2[bp]
-
-  utt_dc1 = np.zeros(41) 
-  utt_dc1[:n_bps] = -2.
-
-  def _inner(startr, startd, h, hsum, utt_d1, utt_dc1):
-    while (startd + align_nfft) <= deglen and \
-      (startr + align_nfft) <= (utt_bps[bp] * downsample):
-      x1 = ref_data[startr : startr + align_nfft] * window
-      x2 = deg_data[startd : startd + align_nfft] * window
-
-      x1, v_max = align.xcorr(x1, x2, align_nfft)
-      n_max = (v_max ** 0.125) / kernel
-
-      for count in range(align_nfft):
-        if x1[count] > v_max:
-          hsum += n_max * kernel
-          for k in range(1 - kernel, kernel):
-            h[(count + k + align_nfft) % align_nfft] += n_max * (kernel - np.abs(k))
-
-      startr += align_nfft // 4
-      startd += align_nfft // 4
-
-    i_max = np.argmax(h)
-    v_max = h[i_max]
-    if i_max >= (align_nfft / 2):
-      i_max -= align_nfft
-
-    utt_d1[bp] = estdelay + i_max
-    if hsum > 0.:
-      utt_dc1[bp] = v_max / hsum
-    else:
-      utt_dc1[bp] = 0.
-
-    return startr, startd, h, hsum, utt_d1, utt_dc1
-
-  def _inner2(startr, startd, h, hsum, utt_d2, utt_dc2):
-    while startd >= 0 and startr >= utt_bps[bp] * downsample:
-      x1 = ref_data[startr : startr + align_nfft] * window
-      x2 = deg_data[startd : startd + align_nfft] * window
-      
-      x1, v_max = align.xcorr(x1, x2, align_nfft)
-      n_max = (v_max ** 0.125) / kernel
-      
-      for count in range(align_nfft):
-        if x1[count] > v_max:
-          hsum += n_max * kernel
-          for k in range(1 - kernel, kernel):
-            h[(count + k + align_nfft) % align_nfft] += n_max * (kernel - np.abs(k))
-      
-      startr -= align_nfft // 4
-      startd -= align_nfft // 4
-    
-    i_max = np.argmax(h)
-    v_max = h[i_max]
-    if i_max >= (align_nfft / 2):
-      i_max -= align_nfft
-    
-    utt_d2[bp] = estdelay + i_max
-    if hsum > 0.:
-      utt_dc2[bp] = v_max / hsum
-    else:
-      utt_dc2[bp] = 0.
-    
-    return startr, startd, h, hsum, utt_d2, utt_dc2
-
-  utt_d1 = np.zeros(41)
-  utt_d2 = np.zeros(41)
-
-  # forward
-  while True:
-    bp = 0
-    while bp < n_bps and utt_dc1[bp] > -2.: bp += 1
-    if bp >= n_bps: break
-
-    estdelay = utt_ed1[bp]
-    h = np.zeros(align_nfft)
-    hsum = 0.
-
-    startr = _utt_start * downsample
-    startd = startr + estdelay
-
-    if startd < 0:
-      startr = -estdelay
-      startd = 0
-
-    startr = max(startr, 0)
-    startd = max(startd, 0)
-
-    startr, startd, h, hsum, utt_d1, utt_dc1 = _inner(startr, startd, h, hsum, utt_d1, utt_dc1)
-    while bp < (n_bps - 1):
-      bp += 1
-      if utt_ed1[bp] == estdelay and utt_dc1[bp] <= -2.:
-        startr, startd, h, hsum, utt_d1, utt_dc1 = _inner(startr, startd, h, hsum, utt_d1, utt_dc1)
- 
-  utt_dc2 = np.zeros(41)
-  for bp in range(n_bps - 1):
-    if utt_dc1[bp] > _utt_delayconf:
-      utt_dc2[bp] = -2.
-    else:
-      utt_dc2[bp] = 0.
-
-  # backward
-  while True:
-    bp = n_bps - 1
-    while bp >= 0 and utt_dc2[bp] > -2.: bp -= 1
-    if bp < 0: break
-
-    estdelay = utt_ed2[bp]
-    h = np.zeros(align_nfft)
-    hsum = 0.
-
-    startr = _utt_end * downsample - align_nfft
-    startd = startr + estdelay
-
-    if (startd + align_nfft) > deglen:
-      startd = deglen - align_nfft
-      startr = startd - estdelay
-
-    startr, startd, h, hsum, utt_d2, utt_dc2 = _inner2(startr, startd, h, hsum, utt_d2, utt_dc2)
-    while bp > 0:
-      bp -= 1
-      if utt_ed2[bp] == estdelay and utt_dc2[bp] <= -2.:
-        startr, startd, h, hsum, utt_d2, utt_dc2 = _inner2(startr, startd, h, hsum, utt_d2, utt_dc2)
-
-  best_dc1 = 0.
-  best_dc2 = 0.
-  best_ed1 = 0
-  best_ed2 = 0
-  best_d1 = 0
-  best_d2 = 0
-  best_bp = 0
-
-  for bp in range(n_bps):
-    if np.abs(utt_d2[bp] - utt_d1[bp]) >= downsample and \
-      (utt_dc1[bp] + utt_dc2[bp]) > (best_dc1 + best_dc2) and \
-      utt_dc1[bp] > _utt_delayconf and utt_dc2[bp] > _utt_delayconf:
-      best_ed1 = utt_ed1[bp]; best_d1 = utt_d1[bp]; best_dc1 = utt_dc1[bp]
-      best_ed2 = utt_ed2[bp]; best_d2 = utt_d2[bp]; best_dc2 = utt_dc2[bp]
-      best_bp = utt_bps[bp]
-
-  return best_ed1, best_d1, best_dc1, best_ed2, best_d2, best_dc2, best_bp
